@@ -1,4 +1,5 @@
 import json
+import io
 import unittest
 from unittest.mock import patch, MagicMock
 from urllib.error import HTTPError
@@ -25,6 +26,13 @@ class AITests(unittest.TestCase):
     def test_errors_are_sanitized(self):
         with patch('ai_service.urlopen',side_effect=HTTPError('url',429,'SECRET',{},None)):
             with self.assertRaisesRegex(AIError,'квота'): generate('secret',DEFAULT_MODEL,[],{})
+
+    def test_invalid_key_reason_without_provider_text(self):
+        body=json.dumps({'error':{'message':'SECRET','details':[{'reason':'API_KEY_INVALID'}]}}).encode()
+        with patch('ai_service.urlopen',side_effect=HTTPError('url',400,'SECRET',{},io.BytesIO(body))):
+            with self.assertRaisesRegex(AIError,'Ключ Gemini не принят') as error:
+                generate('secret',DEFAULT_MODEL,[],{})
+            self.assertNotIn('SECRET',str(error.exception))
 
     def test_malformed_and_truncated(self):
         for reply in [b'invalid',b'{}',json.dumps({'candidates':[{'finishReason':'MAX_TOKENS'}]}).encode()]:

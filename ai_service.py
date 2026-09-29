@@ -53,11 +53,22 @@ def generate(key, model, parts, schema):
             raise ValueError()
         return result
     except HTTPError as exc:
+        # Only inspect known machine codes; never expose provider text or secrets.
+        reason = ''
+        try:
+            error = json.loads(exc.read(32_000)).get('error', {})
+            reasons = {item.get('reason') for item in error.get('details', []) if isinstance(item, dict)}
+            if 'API_KEY_INVALID' in reasons:
+                reason = 'Ключ Gemini не принят Google. Обновите GEMINI_API_KEY в Streamlit Secrets.'
+            elif 'API_KEY_SERVICE_BLOCKED' in reasons:
+                reason = 'В ограничениях ключа запрещён Gemini API. Проверьте настройки ключа Google.'
+        except (ValueError, OSError, AttributeError, TypeError):
+            pass
         messages = {429: "Бесплатная квота Gemini исчерпана. Попробуйте позже или загрузите CSV.",
                     401: "Проверьте ключ Gemini в настройках сервера.",
                     403: "Gemini недоступен для этого ключа или региона.",
                     404: "Модель недоступна. Владелец может изменить GEMINI_MODEL в Secrets."}
-        raise AIError(messages.get(exc.code, "Gemini отклонил запрос. Проверьте модель и файл или попробуйте позже.")) from None
+        raise AIError(reason or messages.get(exc.code, f"Gemini отклонил запрос (HTTP {exc.code}). Проверьте конфигурацию модели и ключа на сервере.")) from None
     except (URLError, TimeoutError, OSError):
         raise AIError("Не удалось связаться с Gemini. Ваше расписание сохранено; попробуйте позже.") from None
     except (KeyError, IndexError, TypeError, ValueError) as exc:
