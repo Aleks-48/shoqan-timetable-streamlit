@@ -3,7 +3,7 @@ import io
 import unittest
 from unittest.mock import patch, MagicMock
 from urllib.error import HTTPError
-from ai_service import generate, extract, Budget, AIError, DEFAULT_MODEL
+from ai_service import generate, extract, Budget, AIError, DEFAULT_MODEL, FALLBACK_MODEL
 from schedule import COLUMNS
 
 class AITests(unittest.TestCase):
@@ -36,6 +36,10 @@ class AITests(unittest.TestCase):
             with patch('ai_service.urlopen',side_effect=lambda *a,**k: (_ for _ in ()).throw(HTTPError('url',code,'private',{},None))) as network, patch('ai_service.time.sleep'):
                 with self.assertRaises(AIError): generate('secret',DEFAULT_MODEL,[],{})
                 self.assertEqual(network.call_count,expected)
+                if code==503:
+                    self.assertIn(FALLBACK_MODEL,network.call_args.args[0].full_url)
+                else:
+                    self.assertIn(DEFAULT_MODEL,network.call_args.args[0].full_url)
 
     def test_errors_are_sanitized(self):
         with patch('ai_service.urlopen',side_effect=HTTPError('url',429,'SECRET',{},None)):

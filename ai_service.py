@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from schedule import COLUMNS
 
 DEFAULT_MODEL = "gemini-3.8-flash"
+FALLBACK_MODEL = "gemini-3.5-flash-lite"
 
 class AIError(ValueError):
     pass
@@ -38,11 +39,14 @@ def generate(key, model, parts, schema):
     payload = {"contents": [{"role": "user", "parts": parts}], "generationConfig": {
         "maxOutputTokens": 8192,
         "responseMimeType": "application/json", "responseJsonSchema": schema}}
-    request = Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                      data=json.dumps(payload).encode(),
-                      headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST")
+    active_model = model
     try:
         for attempt in range(3):
+            # Only the third attempt after transient failures uses the lighter model.
+            active_model = FALLBACK_MODEL if attempt == 2 else model
+            request = Request(f"https://generativelanguage.googleapis.com/v1beta/models/{active_model}:generateContent",
+                              data=json.dumps(payload).encode(),
+                              headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST")
             try:
                 with urlopen(request, timeout=25) as response:
                     raw = response.read(1_000_001)
@@ -78,7 +82,7 @@ def generate(key, model, parts, schema):
                     401: "Проверьте ключ Gemini в настройках сервера.",
                     403: "Gemini недоступен для этого ключа или региона.",
                     404: "Модель недоступна. Владелец может изменить GEMINI_MODEL в Secrets."}
-        raise AIError(reason or messages.get(exc.code, f"Gemini отклонил запрос (HTTP {exc.code}). Проверьте конфигурацию модели и ключа на сервере.")) from None
+        raise AIError((reason or messages.get(exc.code, f"Gemini отклонил запрос (HTTP {exc.code}). Проверьте конфигурацию модели и ключа на сервере.")) + f" Модель: {active_model}.") from None
     except (URLError, TimeoutError, OSError):
         raise AIError("Не удалось связаться с Gemini. Ваше расписание сохранено; попробуйте позже.") from None
     except (KeyError, IndexError, TypeError, ValueError) as exc:
