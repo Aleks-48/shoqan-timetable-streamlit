@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 import streamlit as st
 from assignment_ui import render_assignment
+from browser_storage import restore_pending, render_controls, sync_browser
 from study_plan import allocate
 from ai_ui import render as render_ai
 from planner_views import week_grid, render_directory
@@ -13,6 +14,9 @@ from schedule import bell_schedule, clock_minutes, day_gaps, location, COLUMNS, 
 
 ROOT = Path(__file__).parent
 st.set_page_config(page_title="Shoqan Day · Расписание", page_icon="📘", layout="wide")
+restore_pending()
+if '_week_pending' in st.session_state:
+    st.session_state.week_date=st.session_state.pop('_week_pending')
 THEMES = {
     "Светлая": ("#F5F7FC", "#FFFFFF", "#17233D", "#52617C", "#DCE3F0", "#2258D6", "#EDF2FF"),
     "Тёмная": ("#101827", "#1B263B", "#EDF3FF", "#BBC8DF", "#34445F", "#9BBEFF", "#233653"),
@@ -54,7 +58,7 @@ def style(name):
     [data-baseweb="popover"] *,[role="listbox"]{{color:{text};background-color:{panel}}}
     [data-testid="stExpander"]{{background:{panel};border-color:{border}}}
     button[role="tab"] p{{color:{text}}}
-    @media(max-width:640px){{.block-container{{padding:1rem}}.hero{{padding:20px}}.hero h2{{font-size:1.5rem}}.lesson{{grid-template-columns:80px 1fr;padding:14px;gap:12px}}}}
+    @media(max-width:640px){{.block-container{{padding:1rem}}.stApp h1{{font-size:2rem;line-height:1.2}}.hero{{padding:20px}}.hero h2{{font-size:1.5rem}}.lesson{{grid-template-columns:80px 1fr;padding:14px;gap:12px}}}}
     </style>""", unsafe_allow_html=True)
 
 def lessons(rows,now):
@@ -103,13 +107,13 @@ st.caption("Разбери задание с ИИ, проверь требова
 if st.session_state.is_demo:
     st.info("Демо: занятия и преподаватели вымышлены. Это студенческий проект, не официальное расписание университета.",icon="ℹ️")
 else:
-    st.caption("Ваш CSV · источник не подтверждён университетом · данные действуют в этой сессии")
+    st.caption("Личное расписание · сверьте изменения с официальным источником")
 day_tab,task_tab,settings_tab=st.tabs(["Сегодня","Мой план","Настройки"])
 with day_tab:
     day_tab,week_tab=st.tabs(["Учебный день","Расписание недели"])
 with settings_tab:
     data_tab,ai_tab,search_tab,directory_tab=st.tabs(["Данные","ИИ-импорт","Поиск","Справочник"])
-    st.caption("Загрузки и задания действуют в текущей сессии. Сохраните копии перед закрытием.")
+    st.caption("Сохранение на устройстве и перенос полной копии — в разделе «Данные».")
 group_schedule=schedule[schedule.group==group]
 with day_tab:
     upcoming=expand(group_schedule,today,35)
@@ -197,7 +201,7 @@ with task_tab:
     render_assignment(today)
     st.divider()
     st.subheader("Мои задания")
-    st.caption("Личный список в текущей сессии. Перед закрытием скачайте копию. Синхронизации между устройствами пока нет.")
+    st.caption("Автосохранение можно включить в Настройки → Данные. Полная копия переносит задания и расписание на другое устройство.")
     with st.form("add_task",clear_on_submit=True):
         title=st.text_input("Что нужно сделать?",max_chars=160)
         task_subject=st.text_input("Предмет задания",max_chars=100)
@@ -211,12 +215,29 @@ with task_tab:
             st.error("Максимум 100 задач. Сохраните копию и уберите завершённые.")
         else:
             st.session_state.tasks.append({"id":hashlib.sha256((title+datetime.now().isoformat()).encode()).hexdigest()[:12],"title":title.strip(),"due":due.isoformat(),"done":False,"subject":task_subject.strip(),"minutes":int(task_minutes)})
+            st.rerun()
     for task in sorted(st.session_state.tasks,key=lambda x:(x["done"],x["due"])):
         overdue=not task["done"] and date.fromisoformat(task["due"])<today
         task["done"]=st.checkbox(f"{task['title']} · {task['due']}"+(" · просрочено" if overdue else ""),value=task["done"],key="task_"+task["id"])
         if task.get('steps'):
             with st.expander("Этапы: "+task['title']):
                 st.text(task['steps'])
+        with st.expander('Изменить: '+task['title']):
+            with st.form('edit_'+task['id']):
+                new_title=st.text_input('Название задания',task['title'],max_chars=160)
+                new_subject=st.text_input('Учебный предмет',task.get('subject',''),max_chars=100)
+                new_due=st.date_input('Новый срок',date.fromisoformat(task['due']))
+                new_minutes=st.number_input('Минут на подготовку',min_value=15,max_value=480,value=task.get('minutes',50),step=5)
+                new_steps=st.text_area('Этапы подготовки',task.get('steps',''),max_chars=1500)
+                if st.form_submit_button('Сохранить изменения'):
+                    if new_title.strip() and new_due:
+                        task.update(title=new_title.strip(),subject=new_subject.strip(),due=new_due.isoformat(),minutes=int(new_minutes),steps=new_steps)
+                        st.rerun()
+                    else:
+                        st.warning('Нужны название и срок.')
+            if st.button('Удалить это задание',key='delete_'+task['id']):
+                st.session_state.tasks=[t for t in st.session_state.tasks if t['id']!=task['id']]
+                st.rerun()
     if not st.session_state.tasks:
         st.info("Пока задач нет. Добавьте первое задание или дедлайн.")
     st.subheader("Когда готовиться")
@@ -268,6 +289,22 @@ with task_tab:
         st.session_state.tasks=[t for t in st.session_state.tasks if not t["done"]]
         st.rerun()
 with data_tab:
+    render_controls(theme,group)
+    st.divider()
+    st.subheader('Расписание ИСР-242уск')
+    st.caption('28 сентября — 3 октября 2026. Перенесено вручную из присланных снимков timetable.kgu.kz; группу указал студент. Это снимок одной недели, без автоматических обновлений. Уточняйте замены в официальном расписании.')
+    with st.expander('Посмотреть 23 занятия перед загрузкой'):
+        real_raw=(ROOT/'data/isr242_2026-09-28.csv').read_bytes()
+        st.dataframe(parse_csv(real_raw)[COLUMNS],hide_index=True,width='stretch')
+    if st.button('Использовать расписание ИСР-242уск'):
+        st.session_state.schedule_raw=real_raw
+        st.session_state.source_name='ИСР-242уск · снимок 28.09–03.10.2026'
+        st.session_state.is_demo=False
+        st.query_params['group']='ИСР-242уск'
+        st.session_state._week_pending=date(2026,9,28)
+        st.rerun()
+    st.caption('Для других групп можно загрузить свой CSV. Доступ к их официальным данным требует авторизации университета; выдуманных расписаний здесь нет.')
+    st.divider()
     st.subheader("Импорт расписания")
     st.write("Загрузите CSV из разрешённого источника. Проверьте предпросмотр, затем примените файл. Другие посетители не увидят вашу загрузку.")
     st.download_button("Скачать шаблон",TEMPLATE.encode("utf-8-sig"),"schedule-template.csv","text/csv")
@@ -302,9 +339,10 @@ with data_tab:
     st.divider()
     st.subheader("О проекте")
     st.write("Shoqan Day — студенческий MVP. Для пилота нужен согласованный источник расписания. Интеграция с системами университета, автоматические уведомления и аккаунты находятся в плане развития.")
-st.caption("Shoqan Day · MVP · Источник и ограничения доступны в разделе «Данные»")
+st.caption("Shoqan Day · Источник и сохранение данных: Настройки → Данные")
 
 with ai_tab:
     render_ai(group,today)
 with directory_tab:
     render_directory(schedule,start,today,lessons,now)
+sync_browser(theme,group)

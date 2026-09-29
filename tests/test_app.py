@@ -61,6 +61,18 @@ class AppTests(unittest.TestCase):
         next(t for t in a.text_input if t.label.startswith('Предмет, преподаватель')).set_value('Test').run()
         self.assertFalse(a.exception)
 
+    def test_real_schedule_and_task_edit(self):
+        a=self.app()
+        next(b for b in a.button if b.label=='Использовать расписание ИСР-242уск').click().run()
+        self.assertFalse(a.session_state.is_demo)
+        self.assertEqual(next(s.value for s in a.selectbox if s.label=='Моя группа'),'ИСР-242уск')
+        next(t for t in a.text_input if t.label=='Что нужно сделать?').set_value('Проверка')
+        next(b for b in a.button if b.label=='Добавить задачу').click().run()
+        next(t for t in a.text_input if t.label=='Название задания').set_value('Исправлено')
+        next(b for b in a.button if b.label=='Сохранить изменения').click().run()
+        self.assertEqual(a.session_state.tasks[0]['title'],'Исправлено')
+        self.assertFalse(a.exception)
+
     def test_ai_without_key_makes_no_requests(self):
         with patch('ai_ui.setting',side_effect=lambda name,default='': default), patch('ai_service.urlopen') as network:
             a=self.app()
