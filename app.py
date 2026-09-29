@@ -5,6 +5,8 @@ import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import streamlit as st
+from assignment_ui import render_assignment
+from study_plan import allocate
 from ai_ui import render as render_ai
 from planner_views import week_grid, render_directory
 from schedule import bell_schedule, clock_minutes, day_gaps, location, COLUMNS, DAYS, TEMPLATE, TZ, conflicts, csv_export, expand, ics_export, monday, parse_csv
@@ -96,13 +98,18 @@ with st.sidebar:
     if st.button("Обновить время",width="stretch"):
         st.rerun()
 st.markdown('<div class="brand">SHOQAN DAY / STUDENT PLANNER</div>',unsafe_allow_html=True)
-st.title("Твой день. Всё по расписанию.")
-st.caption("Занятия, аудитории и учебные задачи в одном месте.")
+st.title("Учёба с понятным планом")
+st.caption("Разбери задание с ИИ, проверь требования и найди время для подготовки.")
 if st.session_state.is_demo:
     st.info("Демо: занятия и преподаватели вымышлены. Это студенческий проект, не официальное расписание университета.",icon="ℹ️")
 else:
     st.caption("Ваш CSV · источник не подтверждён университетом · данные действуют в этой сессии")
-day_tab,week_tab,search_tab,task_tab,data_tab,ai_tab,directory_tab=st.tabs(["Мой день","Неделя","Поиск","Задачи","Данные","ИИ-импорт","Справочник"])
+day_tab,task_tab,settings_tab=st.tabs(["Сегодня","Мой план","Настройки"])
+with day_tab:
+    day_tab,week_tab=st.tabs(["Учебный день","Расписание недели"])
+with settings_tab:
+    data_tab,ai_tab,search_tab,directory_tab=st.tabs(["Данные","ИИ-импорт","Поиск","Справочник"])
+    st.caption("Загрузки и задания действуют в текущей сессии. Сохраните копии перед закрытием.")
 group_schedule=schedule[schedule.group==group]
 with day_tab:
     upcoming=expand(group_schedule,today,35)
@@ -120,6 +127,12 @@ with day_tab:
     minutes=sum((datetime.strptime(r.end_time,"%H:%M")-datetime.strptime(r.start_time,"%H:%M")).seconds//60 for r in todays.itertuples())
     b.metric("Учебное время",f"{minutes//60} ч {minutes%60:02} мин")
     c.metric("Группа",group)
+    pending=sorted((t for t in st.session_state.tasks if not t['done']),key=lambda t:t['due'])
+    if pending:
+        st.subheader("Ближайшие задания")
+        for task in pending[:3]:
+            st.write(f"{task['title']} · до {task['due']} · {task.get('minutes',50)} мин")
+        st.caption("План подготовки и отметка выполнения — в разделе «Мой план».")
     lessons(todays,now)
     gaps=day_gaps(todays)
     if gaps:
@@ -181,24 +194,52 @@ with search_tab:
     else:
         st.info("Введите название предмета, фамилию преподавателя или номер аудитории.")
 with task_tab:
-    st.subheader("Учебные задачи")
+    render_assignment(today)
+    st.divider()
+    st.subheader("Мои задания")
     st.caption("Личный список в текущей сессии. Перед закрытием скачайте копию. Синхронизации между устройствами пока нет.")
     with st.form("add_task",clear_on_submit=True):
         title=st.text_input("Что нужно сделать?",max_chars=160)
+        task_subject=st.text_input("Предмет задания",max_chars=100)
+        task_minutes=st.number_input("Время подготовки, минут",min_value=15,max_value=480,value=50,step=5)
         due=st.date_input("Срок",today,key="task_due")
         added=st.form_submit_button("Добавить задачу")
     if added:
-        if not title.strip():
-            st.warning("Введите название задачи.")
+        if not title.strip() or due is None:
+            st.warning("Введите название и срок задачи.")
         elif len(st.session_state.tasks)>=100:
             st.error("Максимум 100 задач. Сохраните копию и уберите завершённые.")
         else:
-            st.session_state.tasks.append({"id":hashlib.sha256((title+datetime.now().isoformat()).encode()).hexdigest()[:12],"title":title.strip(),"due":due.isoformat(),"done":False})
+            st.session_state.tasks.append({"id":hashlib.sha256((title+datetime.now().isoformat()).encode()).hexdigest()[:12],"title":title.strip(),"due":due.isoformat(),"done":False,"subject":task_subject.strip(),"minutes":int(task_minutes)})
     for task in sorted(st.session_state.tasks,key=lambda x:(x["done"],x["due"])):
         overdue=not task["done"] and date.fromisoformat(task["due"])<today
         task["done"]=st.checkbox(f"{task['title']} · {task['due']}"+(" · просрочено" if overdue else ""),value=task["done"],key="task_"+task["id"])
+        if task.get('steps'):
+            with st.expander("Этапы: "+task['title']):
+                st.text(task['steps'])
     if not st.session_state.tasks:
         st.info("Пока задач нет. Добавьте первое задание или дедлайн.")
+    st.subheader("Когда готовиться")
+    st.caption("Предложение на 14 дней по срокам заданий. Только занятия выбранной группы; личные дела и работа здесь не учтены. Прошедшее время исключено.")
+    pa,pb,pc=st.columns(3)
+    begin=pa.number_input("Начинать не раньше, час",min_value=0,max_value=22,value=9,key="plan_begin")
+    end=pb.number_input("Заканчивать до, час",min_value=1,max_value=23,value=20,key="plan_end")
+    limit=pc.number_input("Подготовка в день, минут",min_value=15,max_value=480,value=120,step=15,key="plan_limit")
+    if begin>=end:
+        st.warning("Конец учебного дня должен быть позже начала.")
+    elif st.session_state.tasks:
+        blocks,unplaced=allocate(st.session_state.tasks,group_schedule,now,begin,end,limit)
+        if blocks:
+            st.dataframe([{k:v for k,v in row.items() if k!='task_id'} for row in blocks],hide_index=True,width="stretch")
+            plan_rows=[]
+            for row in blocks:
+                plan_rows.append({'lesson_date':row['Дата'],'start_time':row['Начало'],'end_time':row['Конец'],'subject':'Подготовка: '+row['Задание'],'teacher':'','room':'','group':group})
+            import pandas as pd
+            st.download_button("Скачать предложенный план ICS",ics_export(pd.DataFrame(plan_rows)),"study-plan.ics","text/calendar")
+        if unplaced:
+            st.warning("Всё не помещается до сроков или выходит за горизонт 14 дней. Измените доступное время либо объём задания.")
+            st.dataframe(unplaced,hide_index=True,width="stretch")
+        st.caption("До 50 минут в блоке, затем 10 минут перерыва. Вокруг занятий оставляем 10 минут. Время задания задаёте вы; завершённым оно становится только по вашей отметке.")
     st.download_button("Сохранить задачи JSON",json.dumps(st.session_state.tasks,ensure_ascii=False,indent=2).encode(),"shoqan-tasks.json","application/json")
     restore=st.file_uploader("Восстановить задачи из своей копии",type=["json"])
     if restore and st.button("Заменить список задач из копии"):
@@ -213,7 +254,9 @@ with task_tab:
                 if not isinstance(t,dict) or not isinstance(t.get("title"),str) or not 1<=len(t["title"].strip())<=160 or not isinstance(t.get("done"),bool):
                     raise ValueError
                 date.fromisoformat(t["due"])
-                clean.append({"id":f"import_{i}_{hashlib.sha256(restore.getvalue()).hexdigest()[:8]}","title":t["title"].strip(),"due":t["due"],"done":t["done"]})
+                if type(t.get('minutes',50)) is not int or not 15<=t.get('minutes',50)<=480 or not isinstance(t.get('subject',''),str) or len(t.get('subject',''))>100 or not isinstance(t.get('steps',''),str) or len(t.get('steps',''))>1500:
+                    raise ValueError
+                clean.append({"id":f"import_{i}_{hashlib.sha256(restore.getvalue()).hexdigest()[:8]}","title":t["title"].strip(),"due":t["due"],"done":t["done"],"subject":t.get("subject",""),"minutes":t.get("minutes",50),"steps":t.get("steps","")})
             st.session_state.tasks=clean
             for k in list(st.session_state):
                 if k.startswith("task_") and k!="task_due":
