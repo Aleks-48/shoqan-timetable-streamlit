@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 import streamlit as st
 from ai_ui import render as render_ai
+from planner_views import week_grid, render_directory
 from schedule import bell_schedule, clock_minutes, day_gaps, location, COLUMNS, DAYS, TEMPLATE, TZ, conflicts, csv_export, expand, ics_export, monday, parse_csv
 
 ROOT = Path(__file__).parent
@@ -39,6 +40,12 @@ def style(name):
     .lesson .details{{color:{muted};font-size:.9rem;margin-top:7px}}
     .current{{border-left:5px solid {accent};background:{tint}}}
     .day-label{{font-size:1.1rem;font-weight:750;margin:26px 0 8px}}
+    .week-scroll{{overflow-x:auto;margin:16px 0;border:1px solid {border};border-radius:12px}}
+    .week-grid{{border-collapse:collapse;min-width:1050px;width:100%;background:{panel};color:{text}}}
+    .week-grid th,.week-grid td{{border:1px solid {border};padding:12px;vertical-align:top;min-width:130px}}
+    .week-grid th{{background:{tint};font-size:.85rem}}
+    .week-grid th:first-child{{min-width:75px}}
+    .grid-lesson{{font-size:.85rem;line-height:1.55;padding:8px 0}}
     .stButton>button,.stDownloadButton>button{{border-color:{border};background:{panel};color:{text};border-radius:10px}}
     [data-baseweb="select"]>div,[data-baseweb="input"],[data-baseweb="input"] input,
     [data-baseweb="textarea"],textarea{{background:{panel}!important;color:{text}!important}}
@@ -95,7 +102,7 @@ if st.session_state.is_demo:
     st.info("Демо: занятия и преподаватели вымышлены. Это студенческий проект, не официальное расписание университета.",icon="ℹ️")
 else:
     st.caption("Ваш CSV · источник не подтверждён университетом · данные действуют в этой сессии")
-day_tab,week_tab,search_tab,task_tab,data_tab,ai_tab=st.tabs(["Мой день","Неделя","Поиск","Задачи","Данные","ИИ-импорт"])
+day_tab,week_tab,search_tab,task_tab,data_tab,ai_tab,directory_tab=st.tabs(["Мой день","Неделя","Поиск","Задачи","Данные","ИИ-импорт","Справочник"])
 group_schedule=schedule[schedule.group==group]
 with day_tab:
     upcoming=expand(group_schedule,today,35)
@@ -127,14 +134,14 @@ with day_tab:
     st.caption(f"Обновлено в {now:%H:%M} · {today:%d.%m.%Y}. Для актуального статуса нажмите «Обновить время».")
 with week_tab:
     def shift_week(days):
-        st.session_state.week_date=st.session_state.get("week_date",today)+timedelta(days=days)
+        st.session_state.week_date=(st.session_state.get("week_date") or today)+timedelta(days=days)
     nav1,nav2,nav3=st.columns(3)
     nav1.button("← Предыдущая неделя",on_click=shift_week,args=(-7,),width="stretch")
     nav2.button("Текущая неделя",on_click=lambda: st.session_state.update(week_date=today),width="stretch")
     nav3.button("Следующая неделя →",on_click=shift_week,args=(7,),width="stretch")
     if "week_date" not in st.session_state:
         st.session_state.week_date=today
-    selected=st.date_input("Любая дата нужной недели",value=None,key="week_date")
+    selected=st.date_input("Любая дата нужной недели",value=None,key="week_date") or today
     start=monday(selected)
     weekly=expand(group_schedule,start)
     st.subheader(f"{start:%d.%m} — {start+timedelta(days=6):%d.%m.%Y}")
@@ -143,9 +150,15 @@ with week_tab:
         st.warning("Есть пересечения. Уточните их у ответственного за расписание.")
         for issue in issues:
             st.write(issue)
-    mode=st.radio("Вид расписания",["Карточки","Таблица"],horizontal=True)
+    mode=st.radio("Вид расписания",["Карточки","Таблица","Сетка недели"],horizontal=True)
     if mode=="Карточки":
         lessons(weekly,now)
+    elif mode=="Сетка недели":
+        if weekly.empty:
+            st.info("На выбранную неделю занятий нет.")
+        else:
+            st.markdown(week_grid(weekly,start),unsafe_allow_html=True)
+            st.caption("На узком экране сетку можно прокручивать вбок. Каждая строка — точный интервал занятия; пересекающиеся занятия не скрываются.")
     else:
         st.dataframe(weekly[["lesson_date","start_time","end_time","subject","teacher","room","building","lesson_type"]].rename(columns={"lesson_date":"Дата","start_time":"Начало","end_time":"Конец","subject":"Предмет","teacher":"Преподаватель","room":"Аудитория","building":"Корпус","lesson_type":"Тип"}),hide_index=True,width="stretch")
     d1,d2=st.columns(2)
@@ -250,3 +263,5 @@ st.caption("Shoqan Day · MVP · Источник и ограничения до
 
 with ai_tab:
     render_ai(group,today)
+with directory_tab:
+    render_directory(schedule,start,today,lessons,now)

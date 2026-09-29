@@ -13,9 +13,9 @@ class AppTests(unittest.TestCase):
     def test_themes_group_and_table(self):
         a=self.app()
         for theme in ['Тёмная','Тёплая','Светлая']:
-            a.selectbox[0].select(theme).run()
+            next(s for s in a.selectbox if s.label=='Тема оформления').select(theme).run()
             self.assertFalse(a.exception)
-        a.selectbox[1].select('ИС-101').run()
+        next(s for s in a.selectbox if s.label=='Моя группа').select('ИС-101').run()
         a.radio[0].set_value('Таблица').run()
         self.assertFalse(a.exception)
         table=next(d.value for d in a.dataframe if 'Предмет' in d.value.columns)
@@ -31,6 +31,15 @@ class AppTests(unittest.TestCase):
         next(b for b in a.button if b.label=='← Предыдущая неделя').click().run()
         self.assertEqual(a.session_state.week_date,before)
         self.assertFalse(a.exception)
+
+    def test_directory_and_week_grid(self):
+        a=self.app()
+        a.radio[0].set_value('Сетка недели').run()
+        self.assertFalse(a.exception)
+        self.assertTrue(any('week-grid' in m.value and '<table' in m.value for m in a.markdown))
+        a.radio(key='directory_mode').set_value('Аудитории').run()
+        self.assertFalse(a.exception)
+        self.assertTrue(any('По загруженным данным' in d.value.columns for d in a.dataframe))
 
     def test_literal_search(self):
         a=self.app()
