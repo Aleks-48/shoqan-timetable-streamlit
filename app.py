@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 import streamlit as st
 from ai_ui import render as render_ai
-from schedule import COLUMNS, DAYS, TEMPLATE, TZ, conflicts, csv_export, expand, ics_export, monday, parse_csv
+from schedule import bell_schedule, clock_minutes, day_gaps, location, COLUMNS, DAYS, TEMPLATE, TZ, conflicts, csv_export, expand, ics_export, monday, parse_csv
 
 ROOT = Path(__file__).parent
 st.set_page_config(page_title="Shoqan Day · Расписание", page_icon="📘", layout="wide")
@@ -56,7 +56,7 @@ def lessons(rows,now):
         st.markdown(f'<div class="day-label">{DAYS[day.weekday()]} · {day:%d.%m}' + (" · сегодня" if day==now.date() else "") + '</div>',unsafe_allow_html=True)
         for r in items.to_dict("records"):
             live = day==now.date() and r["start_time"]<=now.strftime("%H:%M")<r["end_time"]
-            st.markdown(f'''<article class="lesson {'current' if live else ''}"><div class="clock">{e(r['start_time'])}<br><span class="meta">{e(r['end_time'])}</span></div><div><strong>{e(r['subject'])}</strong><div class="details">Ауд. {e(r['room'] or 'не указана')} · {e(r['teacher'] or 'Преподаватель не указан')}</div><div class="details">{e(r['group'])}{' · Идёт сейчас' if live else ''}</div></div></article>''',unsafe_allow_html=True)
+            st.markdown(f'''<article class="lesson {'current' if live else ''}"><div class="clock">{e(r['start_time'])}<br><span class="meta">{e(r['end_time'])}</span></div><div><strong>{e(r['subject'])}</strong><div class="details">Место: {e(location(r))} · {e(r['teacher'] or 'Преподаватель не указан')}</div><div class="details">{e(r['group'])} · {e(r.get('lesson_type') or 'Тип не указан')} · {clock_minutes(r['end_time'])-clock_minutes(r['start_time'])} мин{' · Идёт сейчас' if live else ''}</div></div></article>''',unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown("### 📘 Shoqan Day")
@@ -85,6 +85,7 @@ with st.sidebar:
     st.caption("Источник расписания")
     st.write(st.session_state.source_name)
     st.caption("Время Казахстана · UTC+5")
+    st.link_button("Официальное расписание ↗", "https://timetable.kgu.kz/",width="stretch")
     if st.button("Обновить время",width="stretch"):
         st.rerun()
 st.markdown('<div class="brand">SHOQAN DAY / STUDENT PLANNER</div>',unsafe_allow_html=True)
@@ -102,20 +103,38 @@ with day_tab:
     if not remaining.empty:
         nxt=remaining.iloc[0]
         live=nxt.lesson_date==today and nxt.start_time<=now.strftime("%H:%M")
-        label="ИДЁТ СЕЙЧАС" if live else "БЛИЖАЙШАЯ ПАРА"
-        st.markdown(f'''<div class="hero"><div class="eyebrow">{label} · {nxt.lesson_date:%d.%m} · {e(nxt.start_time)}–{e(nxt.end_time)}</div><h2>{e(nxt.subject)}</h2><div class="meta">Аудитория {e(nxt.room or 'не указана')} · {e(nxt.teacher or 'Преподаватель не указан')}</div></div>''',unsafe_allow_html=True)
+        label="ИДЁТ СЕЙЧАС" if live else "БЛИЖАЙШЕЕ ЗАНЯТИЕ"
+        st.markdown(f'''<div class="hero"><div class="eyebrow">{label} · {nxt.lesson_date:%d.%m} · {e(nxt.start_time)}–{e(nxt.end_time)}</div><h2>{e(nxt.subject)}</h2><div class="meta">Место: {e(location(nxt))} · {e(nxt.teacher or 'Преподаватель не указан')}</div></div>''',unsafe_allow_html=True)
     else:
         st.success("На ближайшие 35 дней занятий нет. Проверьте группу и источник данных.")
     todays=upcoming[upcoming.lesson_date==today]
     a,b,c=st.columns(3)
-    a.metric("Пар сегодня",len(todays))
+    a.metric("Занятий сегодня",len(todays))
     minutes=sum((datetime.strptime(r.end_time,"%H:%M")-datetime.strptime(r.start_time,"%H:%M")).seconds//60 for r in todays.itertuples())
     b.metric("Учебное время",f"{minutes//60} ч {minutes%60:02} мин")
     c.metric("Группа",group)
     lessons(todays,now)
+    gaps=day_gaps(todays)
+    if gaps:
+        st.subheader("Перерывы и окна сегодня")
+        for gap in gaps:
+            label="Окно" if gap["Минут"]>=50 else "Перерыв"
+            st.write(f"{label}: {gap['С']}–{gap['До']} · {gap['Минут']} мин")
+        st.caption("Рассчитано между загруженными занятиями. Время на переход между корпусами не учитывается.")
+    with st.expander("Расписание звонков · занятия по 50 минут"):
+        st.dataframe(bell_schedule(),hide_index=True,width="stretch")
+        st.caption("По скриншотам университетского расписания, переданным 29.09.2026. Это справочная сетка, не онлайн-синхронизация. В импортированном расписании сохраняется исходное время.")
     st.caption(f"Обновлено в {now:%H:%M} · {today:%d.%m.%Y}. Для актуального статуса нажмите «Обновить время».")
 with week_tab:
-    selected=st.date_input("Любая дата нужной недели",today,key="week_date")
+    def shift_week(days):
+        st.session_state.week_date=st.session_state.get("week_date",today)+timedelta(days=days)
+    nav1,nav2,nav3=st.columns(3)
+    nav1.button("← Предыдущая неделя",on_click=shift_week,args=(-7,),width="stretch")
+    nav2.button("Текущая неделя",on_click=lambda: st.session_state.update(week_date=today),width="stretch")
+    nav3.button("Следующая неделя →",on_click=shift_week,args=(7,),width="stretch")
+    if "week_date" not in st.session_state:
+        st.session_state.week_date=today
+    selected=st.date_input("Любая дата нужной недели",value=None,key="week_date")
     start=monday(selected)
     weekly=expand(group_schedule,start)
     st.subheader(f"{start:%d.%m} — {start+timedelta(days=6):%d.%m.%Y}")
@@ -128,21 +147,21 @@ with week_tab:
     if mode=="Карточки":
         lessons(weekly,now)
     else:
-        st.dataframe(weekly[["lesson_date","start_time","end_time","subject","teacher","room"]].rename(columns={"lesson_date":"Дата","start_time":"Начало","end_time":"Конец","subject":"Предмет","teacher":"Преподаватель","room":"Аудитория"}),hide_index=True,width="stretch")
+        st.dataframe(weekly[["lesson_date","start_time","end_time","subject","teacher","room","building","lesson_type"]].rename(columns={"lesson_date":"Дата","start_time":"Начало","end_time":"Конец","subject":"Предмет","teacher":"Преподаватель","room":"Аудитория","building":"Корпус","lesson_type":"Тип"}),hide_index=True,width="stretch")
     d1,d2=st.columns(2)
     d1.download_button("В календарь (.ics)",ics_export(weekly),"shoqan-week.ics","text/calendar",disabled=weekly.empty,width="stretch")
     d2.download_button("Скачать неделю CSV",csv_export(weekly[["lesson_date",*COLUMNS[2:]]].rename(columns={"lesson_date":"date"})),"shoqan-week.csv","text/csv",disabled=weekly.empty,width="stretch")
     st.caption("ICS переносит только выбранную неделю. Это разовый экспорт: изменения в приложении не обновляют календарь автоматически.")
 with search_tab:
     st.subheader("Найди нужную пару")
-    query=st.text_input("Предмет, преподаватель, аудитория или группа",placeholder="Например, Базы данных или 203")
+    query=st.text_input("Предмет, преподаватель, аудитория, корпус или группа",placeholder="Например, Базы данных или 203")
     all_groups=st.checkbox("Искать по всем группам")
     st.caption(f"Поиск в неделе {start:%d.%m} — {start+timedelta(days=6):%d.%m}. Неделю можно сменить в разделе «Неделя».")
     source=expand(schedule if all_groups else group_schedule,start)
     if query.strip() and source.empty:
         st.info("На выбранную неделю занятий нет. Выберите другую дату в разделе «Неделя».")
     elif query.strip():
-        mask=source[["group","subject","teacher","room"]].fillna("").astype(str).agg(" ".join,axis=1).str.contains(query.strip(),case=False,regex=False)
+        mask=source[["group","subject","teacher","room","building","lesson_type"]].fillna("").astype(str).agg(" ".join,axis=1).str.contains(query.strip(),case=False,regex=False)
         found=source[mask]
         st.caption(f"Найдено: {len(found)}")
         lessons(found,now)
@@ -211,7 +230,10 @@ with data_tab:
                 st.rerun()
         except (ValueError,UnicodeDecodeError) as exc:
             st.error(str(exc))
+    st.download_button("Сохранить всё расписание CSV",csv_export(schedule[COLUMNS]),"shoqan-schedule.csv","text/csv")
     with st.expander("Формат файла и ограничения"):
+        st.write("Необязательные колонки: building — корпус, lesson_type — тип занятия (например, Л, ЛЗ, СПЗ). Старые CSV без этих колонок тоже поддерживаются.")
+        st.write("Одно занятие обычно длится 50 минут. Соседние занятия одного предмета сохраняйте отдельными строками: перерыв между ними не входит в учебное время.")
         st.write("Обязательные колонки: group, start_time, end_time, subject, teacher, room. Преподавателя и аудиторию можно оставить пустыми.")
         st.write("В строке заполните либо weekday (Понедельник…Воскресенье), либо date (YYYY-MM-DD). Время строго ЧЧ:ММ. Конец позже начала. UTF-8 или Windows-1251, разделитель запятая или точка с запятой.")
         st.write("weekday повторяется каждую неделю без каникул. Для точного учебного периода используйте date. Чётные/нечётные недели и автоматические замены пока не поддерживаются.")

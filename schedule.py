@@ -11,8 +11,34 @@ import pandas as pd
 TZ = ZoneInfo("Asia/Almaty")
 DAYS = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
 REQUIRED = ["group", "start_time", "end_time", "subject", "teacher", "room"]
-COLUMNS = ["weekday", "date", *REQUIRED]
-TEMPLATE = "weekday,date,group,start_time,end_time,subject,teacher,room\nПонедельник,,ИС-101,09:00,10:30,Пример предмета,Пример преподавателя,101\n"
+COLUMNS = ["weekday", "date", *REQUIRED, "building", "lesson_type"]
+TEMPLATE = "weekday,date,group,start_time,end_time,subject,teacher,room,building,lesson_type\nПонедельник,,ИС-101,08:30,09:20,Пример предмета,Пример преподавателя,101,Корпус АТИ,Л\n"
+# Reference transcribed from the user's university screenshots, not a live feed.
+BELL_STARTS = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:40", "14:40", "15:40", "16:40", "17:40", "18:40", "19:40", "20:40"]
+
+def clock_minutes(value):
+    hours, minutes = map(int, value.split(":"))
+    return hours * 60 + minutes
+
+def bell_schedule():
+    return [{"Занятие": i+1, "Начало": start,
+             "Конец": f"{(clock_minutes(start)+50)//60:02}:{(clock_minutes(start)+50)%60:02}"}
+            for i,start in enumerate(BELL_STARTS)]
+
+def location(row):
+    return " · ".join(x for x in [row.get("building", ""), row.get("room", "")] if x) or "не указано"
+
+def day_gaps(rows):
+    """Gaps between the union of occupied intervals; overlaps aren't free time."""
+    result=[]
+    for (day,group), block in rows.groupby(["lesson_date","group"]):
+        occupied_until=None
+        for r in block.sort_values("start_time").to_dict("records"):
+            if occupied_until and r["start_time"]>occupied_until:
+                result.append({"Дата":day,"Группа":group,"С":occupied_until,"До":r["start_time"],
+                               "Минут":clock_minutes(r["start_time"])-clock_minutes(occupied_until)})
+            occupied_until=max(occupied_until or r["end_time"],r["end_time"])
+    return result
 
 def monday(day):
     return day - timedelta(days=day.weekday())
@@ -126,8 +152,8 @@ def ics_export(rows):
     lines = ["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//Shoqan Day//Timetable//RU","CALSCALE:GREGORIAN"]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     for r in rows.to_dict("records"):
-        uid=hashlib.sha256("|".join(str(r.get(k,"")) for k in ["lesson_date",*REQUIRED]).encode()).hexdigest()[:32]
-        lines += ["BEGIN:VEVENT",f"UID:{uid}@shoqan-day",f"DTSTAMP:{stamp}",f"DTSTART:{utc(r['lesson_date'],r['start_time'])}",f"DTEND:{utc(r['lesson_date'],r['end_time'])}",f"SUMMARY:{esc(r['subject'])}",f"LOCATION:{esc(r['room'])}",f"DESCRIPTION:{esc(r['group']+' · '+r['teacher'])}","END:VEVENT"]
+        uid=hashlib.sha256("|".join(str(r.get(k,"")) for k in ["lesson_date",*REQUIRED,"building","lesson_type"]).encode()).hexdigest()[:32]
+        lines += ["BEGIN:VEVENT",f"UID:{uid}@shoqan-day",f"DTSTAMP:{stamp}",f"DTSTART:{utc(r['lesson_date'],r['start_time'])}",f"DTEND:{utc(r['lesson_date'],r['end_time'])}",f"SUMMARY:{esc(r['subject'])}",f"LOCATION:{esc(location(r))}",f"DESCRIPTION:{esc(r['group']+' · '+r['teacher']+' · '+r.get('lesson_type',''))}","END:VEVENT"]
     lines.append("END:VCALENDAR")
     folded=[]
     for line in lines:

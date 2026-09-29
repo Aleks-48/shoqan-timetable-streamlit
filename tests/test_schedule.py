@@ -1,12 +1,34 @@
 import unittest
 from datetime import date
 from pathlib import Path
-from schedule import parse_csv, expand, conflicts, ics_export, csv_export
+from schedule import parse_csv, expand, conflicts, ics_export, csv_export, day_gaps, bell_schedule, clock_minutes
 
 HEADER = 'weekday,date,group,start_time,end_time,subject,teacher,room\n'
 ROW = 'Понедельник,,ИС-101,09:00,10:30,Алгоритмы,Преподаватель,101\n'
 
 class ScheduleTests(unittest.TestCase):
+    def test_fifty_minute_demo_and_bells(self):
+        f=parse_csv(Path('data/schedule_demo.csv').read_bytes())
+        self.assertTrue(all(clock_minutes(r.end_time)-clock_minutes(r.start_time)==50 for r in f.itertuples()))
+        bells=bell_schedule()
+        self.assertEqual((bells[4]['Конец'],bells[5]['Начало']),('13:20','13:40'))
+        self.assertEqual(bells[-1]['Конец'],'21:30')
+
+    def test_gaps_merge_overlaps_and_stay_inside_day(self):
+        raw=HEADER+ROW+ROW.replace('09:00,10:30,Алгоритмы','09:30,10:00,Вложенное')+ROW.replace('09:00,10:30,Алгоритмы','11:30,12:20,Позднее')
+        gaps=day_gaps(expand(parse_csv(raw.encode()),date(2026,9,28)))
+        self.assertEqual(len(gaps),1)
+        self.assertEqual((gaps[0]['С'],gaps[0]['До'],gaps[0]['Минут']),('10:30','11:30',60))
+
+    def test_optional_location_and_type_survive_export(self):
+        raw=HEADER.rstrip()+',building,lesson_type\n'+ROW.rstrip()+',Корпус АТИ,ЛЗ\n'
+        f=parse_csv(raw.encode())
+        restored=parse_csv(csv_export(f.drop(columns='weekday_num')))
+        self.assertEqual(restored.iloc[0].building,'Корпус АТИ')
+        self.assertEqual(restored.iloc[0].lesson_type,'ЛЗ')
+        self.assertIn('LOCATION:Корпус АТИ · 101',ics_export(expand(f,date(2026,9,28))).decode())
+        self.assertEqual(parse_csv((HEADER+ROW).encode()).iloc[0].building,'')
+
     def test_demo_and_group_counts(self):
         f=parse_csv(Path('data/schedule_demo.csv').read_bytes())
         self.assertEqual(len(f),13)

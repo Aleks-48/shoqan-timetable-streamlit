@@ -18,7 +18,19 @@ class AppTests(unittest.TestCase):
         a.selectbox[1].select('ИС-101').run()
         a.radio[0].set_value('Таблица').run()
         self.assertFalse(a.exception)
-        self.assertEqual(len(a.dataframe[0].value),8)
+        table=next(d.value for d in a.dataframe if 'Предмет' in d.value.columns)
+        self.assertEqual(len(table),8)
+        self.assertIn('Корпус',table.columns)
+
+    def test_week_navigation(self):
+        from datetime import timedelta
+        a=self.app()
+        before=a.session_state.week_date
+        next(b for b in a.button if b.label=='Следующая неделя →').click().run()
+        self.assertEqual(a.session_state.week_date,before+timedelta(days=7))
+        next(b for b in a.button if b.label=='← Предыдущая неделя').click().run()
+        self.assertEqual(a.session_state.week_date,before)
+        self.assertFalse(a.exception)
 
     def test_literal_search(self):
         a=self.app()
