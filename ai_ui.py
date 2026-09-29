@@ -21,6 +21,7 @@ def render(group, today):
     st.subheader("Из фото — в расписание")
     st.write("Загрузите одну страницу расписания. Gemini предложит таблицу, которую можно исправить перед импортом.")
     key, model = setting("GEMINI_API_KEY"), setting("GEMINI_MODEL", DEFAULT_MODEL)
+    st.caption("Модель на сервере: " + model + " · при временном отказе выполняем до трёх попыток.")
     if not key:
         st.info("ИИ готов к подключению: владелец должен добавить ключ Google AI Studio в Streamlit Secrets. CSV-импорт уже работает.")
         with st.expander("Как владельцу включить бесплатный Gemini"):

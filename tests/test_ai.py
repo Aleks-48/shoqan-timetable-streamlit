@@ -21,7 +21,21 @@ class AITests(unittest.TestCase):
             self.assertEqual(generate('secret',DEFAULT_MODEL,[{'text':'test'}],{}),{'rows':[]})
             request=network.call_args.args[0]
             self.assertNotIn('secret',request.full_url)
-            self.assertEqual(network.call_args.kwargs['timeout'],45)
+            self.assertEqual(network.call_args.kwargs['timeout'],25)
+
+    def test_temporary_failure_recovers_without_duplicate_result(self):
+        response=MagicMock()
+        response.__enter__.return_value.read.return_value=json.dumps({'candidates':[{'finishReason':'STOP','content':{'parts':[{'text':'{"ok":true}'}]}}]}).encode()
+        with patch('ai_service.urlopen',side_effect=[HTTPError('url',503,'private',{},None),response]) as network, patch('ai_service.time.sleep') as sleep:
+            self.assertEqual(generate('secret',DEFAULT_MODEL,[],{}),{'ok':True})
+            self.assertEqual(network.call_count,2)
+            sleep.assert_called_once()
+
+    def test_temporary_failure_is_bounded_and_bad_request_not_retried(self):
+        for code,expected in [(503,3),(400,1),(403,1),(429,1)]:
+            with patch('ai_service.urlopen',side_effect=lambda *a,**k: (_ for _ in ()).throw(HTTPError('url',code,'private',{},None))) as network, patch('ai_service.time.sleep'):
+                with self.assertRaises(AIError): generate('secret',DEFAULT_MODEL,[],{})
+                self.assertEqual(network.call_count,expected)
 
     def test_errors_are_sanitized(self):
         with patch('ai_service.urlopen',side_effect=HTTPError('url',429,'SECRET',{},None)):

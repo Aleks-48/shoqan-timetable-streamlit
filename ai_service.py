@@ -2,6 +2,7 @@
 import base64
 import json
 import re
+import random
 import threading
 import time
 from urllib.request import Request, urlopen
@@ -41,8 +42,16 @@ def generate(key, model, parts, schema):
                       data=json.dumps(payload).encode(),
                       headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST")
     try:
-        with urlopen(request, timeout=45) as response:
-            raw = response.read(1_000_001)
+        for attempt in range(3):
+            try:
+                with urlopen(request, timeout=25) as response:
+                    raw = response.read(1_000_001)
+                break
+            except HTTPError as transient:
+                if transient.code not in (502, 503, 504) or attempt == 2:
+                    raise
+                transient.close()
+                time.sleep(2 ** attempt + random.uniform(0, 0.5))
         if len(raw) > 1_000_000:
             raise AIError("Слишком большой ответ. Разделите расписание на страницы.")
         candidate = json.loads(raw)["candidates"][0]
@@ -65,7 +74,7 @@ def generate(key, model, parts, schema):
         except (ValueError, OSError, AttributeError, TypeError):
             pass
         messages = {503: "Сервис Gemini временно недоступен (HTTP 503). Попробуйте позже; задания можно добавить вручную.",
-                    429: "Бесплатная квота Gemini исчерпана. Попробуйте позже или загрузите CSV.",
+                    429: "Достигнут лимит запросов или квота Gemini. Попробуйте позже; задания можно добавить вручную.",
                     401: "Проверьте ключ Gemini в настройках сервера.",
                     403: "Gemini недоступен для этого ключа или региона.",
                     404: "Модель недоступна. Владелец может изменить GEMINI_MODEL в Secrets."}
