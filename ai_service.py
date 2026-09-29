@@ -36,7 +36,7 @@ def generate(key, model, parts, schema):
         raise AIError("Некорректное имя модели в настройках сервера.")
     payload = {"contents": [{"role": "user", "parts": parts}], "generationConfig": {
         "maxOutputTokens": 8192,
-        "responseFormat": {"text": {"mimeType": "application/json", "schema": schema}}}}
+        "responseMimeType": "application/json", "responseJsonSchema": schema}}
     request = Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                       data=json.dumps(payload).encode(),
                       headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST")
