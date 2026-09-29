@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from datetime import date
 from pathlib import Path
 from streamlit.testing.v1 import AppTest
@@ -38,5 +39,12 @@ class AppTests(unittest.TestCase):
         a.run()
         a.text_input[0].set_value('Test').run()
         self.assertFalse(a.exception)
+
+    def test_ai_without_key_makes_no_requests(self):
+        with patch('ai_ui.setting',side_effect=lambda name,default='': default), patch('ai_service.urlopen') as network:
+            a=self.app()
+            self.assertTrue(next(b for b in a.button if b.label=='Распознать расписание').disabled)
+            self.assertTrue(any('готов к подключению' in info.value for info in a.info))
+            network.assert_not_called()
 
 if __name__=='__main__':unittest.main()
