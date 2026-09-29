@@ -51,4 +51,8 @@ class ScheduleTests(unittest.TestCase):
         f=parse_csv((HEADER+ROW).encode())
         self.assertEqual(len(parse_csv(csv_export(f.drop(columns='weekday_num')))),1)
 
+    def test_malformed_csv_returns_useful_error(self):
+        with self.assertRaisesRegex(ValueError,'структура CSV'):
+            parse_csv((HEADER+'"unterminated').encode())
+
 if __name__=='__main__':unittest.main()

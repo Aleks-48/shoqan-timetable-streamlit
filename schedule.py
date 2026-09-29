@@ -18,6 +18,12 @@ def monday(day):
     return day - timedelta(days=day.weekday())
 
 def parse_csv(raw: bytes) -> pd.DataFrame:
+    try:
+        return _parse_csv(raw)
+    except csv.Error as exc:
+        raise ValueError("Некорректная структура CSV или слишком длинная ячейка. Проверьте кавычки и разделители.") from exc
+
+def _parse_csv(raw: bytes) -> pd.DataFrame:
     if len(raw) > 2_000_000:
         raise ValueError("Файл больше 2 МБ. Разделите расписание на несколько файлов.")
     try:
@@ -27,7 +33,7 @@ def parse_csv(raw: bytes) -> pd.DataFrame:
     if not text.strip():
         raise ValueError("CSV пуст. Скачайте шаблон и добавьте занятия.")
     header = text.splitlines()[0]
-    reader = csv.reader(StringIO(text), delimiter=";" if header.count(";") > header.count(",") else ",")
+    reader = csv.reader(StringIO(text), delimiter=";" if header.count(";") > header.count(",") else ",", strict=True)
     names = [s.strip().lower() for s in next(reader)]
     if len(names) != len(set(names)):
         raise ValueError("В заголовке повторяются названия колонок.")
