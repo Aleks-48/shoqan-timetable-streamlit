@@ -1,189 +1,226 @@
 from __future__ import annotations
-
-from datetime import date, datetime, time, timedelta
-from io import BytesIO
+import hashlib
+import html
+import json
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
-
-import pandas as pd
 import streamlit as st
+from schedule import COLUMNS, DAYS, TEMPLATE, TZ, conflicts, csv_export, expand, ics_export, monday, parse_csv
 
-
-APP_DIR = Path(__file__).parent
-DEMO_FILE = APP_DIR / "data" / "schedule_demo.csv"
-LOCAL_TZ = ZoneInfo("Asia/Qyzylorda")
-WEEKDAYS = {
-    "понедельник": 0,
-    "вторник": 1,
-    "среда": 2,
-    "четверг": 3,
-    "пятница": 4,
-    "суббота": 5,
-    "воскресенье": 6,
+ROOT = Path(__file__).parent
+st.set_page_config(page_title="Shoqan Day · Расписание", page_icon="📘", layout="wide")
+THEMES = {
+    "Светлая": ("#F5F7FC", "#FFFFFF", "#17233D", "#52617C", "#DCE3F0", "#2258D6", "#EDF2FF"),
+    "Тёмная": ("#101827", "#1B263B", "#EDF3FF", "#BBC8DF", "#34445F", "#9BBEFF", "#233653"),
+    "Тёплая": ("#F7F3EC", "#FFFCF6", "#302C26", "#6F6251", "#E5D9C8", "#87602C", "#F1E7D7"),
 }
-WEEKDAY_NAMES = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-REQUIRED_COLUMNS = ["group", "start_time", "end_time", "subject", "teacher", "room"]
-CSV_TEMPLATE = "weekday,group,start_time,end_time,subject,teacher,room\nПонедельник,ИС-101,09:00,10:30,Пример предмета,Иванов И.И.,101\n"
 
+def e(value):
+    return html.escape(str(value))
 
-st.set_page_config(page_title="Расписание Shoqan", page_icon="📅", layout="wide")
+def style(name):
+    bg,panel,text,muted,border,accent,tint = THEMES[name]
+    st.markdown(f"""<style>
+    .stApp,[data-testid="stHeader"]{{background:{bg};color:{text}}}
+    [data-testid="stSidebar"]{{background:{panel};color:{text}}}
+    .stApp p,.stApp label,.stApp h1,.stApp h2,.stApp h3,.stApp h4,
+    [data-testid="stWidgetLabel"] p,[data-testid="stMetricValue"]{{color:{text}}}
+    [data-testid="stCaptionContainer"] p{{color:{muted}}}
+    .block-container{{max-width:1180px;padding-top:2.4rem;padding-bottom:3rem}}
+    .brand{{font-size:.8rem;letter-spacing:.18em;font-weight:800;color:{accent};margin-bottom:20px}}
+    .hero{{background:{panel};border:1px solid {border};border-radius:22px;padding:28px 30px;margin:10px 0 24px}}
+    .hero h2{{font-size:2rem;margin:5px 0 12px;line-height:1.25}}
+    .eyebrow{{color:{accent};font-size:.8rem;font-weight:700;letter-spacing:.08em}}
+    .meta{{color:{muted};font-size:.95rem}}
+    .lesson{{display:grid;grid-template-columns:110px 1fr;gap:18px;background:{panel};border:1px solid {border};border-radius:14px;padding:18px 22px;margin:10px 0}}
+    .lesson strong{{font-size:1.05rem;color:{text}}}
+    .lesson .clock{{font-weight:750;color:{accent};font-size:1rem}}
+    .lesson .details{{color:{muted};font-size:.9rem;margin-top:7px}}
+    .current{{border-left:5px solid {accent};background:{tint}}}
+    .day-label{{font-size:1.1rem;font-weight:750;margin:26px 0 8px}}
+    .stButton>button,.stDownloadButton>button{{border-color:{border};background:{panel};color:{text};border-radius:10px}}
+    [data-baseweb="select"]>div,[data-baseweb="input"],[data-baseweb="input"] input,
+    [data-baseweb="textarea"],textarea{{background:{panel}!important;color:{text}!important}}
+    [data-baseweb="popover"] *,[role="listbox"]{{color:{text};background-color:{panel}}}
+    [data-testid="stExpander"]{{background:{panel};border-color:{border}}}
+    button[role="tab"] p{{color:{text}}}
+    @media(max-width:640px){{.block-container{{padding:1rem}}.hero{{padding:20px}}.hero h2{{font-size:1.5rem}}.lesson{{grid-template-columns:80px 1fr;padding:14px;gap:12px}}}}
+    </style>""", unsafe_allow_html=True)
 
-
-def local_today() -> date:
-    return datetime.now(LOCAL_TZ).date()
-
-
-def monday_of(day: date) -> date:
-    return day - timedelta(days=day.weekday())
-
-
-def read_csv_bytes(raw: bytes) -> pd.DataFrame:
-    try:
-        return pd.read_csv(BytesIO(raw), encoding="utf-8-sig")
-    except UnicodeDecodeError:
-        return pd.read_csv(BytesIO(raw), encoding="cp1251")
-
-
-def load_schedule(uploaded_file) -> tuple[pd.DataFrame, bool, str | None]:
-    is_demo = uploaded_file is None
-    try:
-        frame = pd.read_csv(DEMO_FILE) if is_demo else read_csv_bytes(uploaded_file.getvalue())
-    except Exception as exc:
-        return pd.DataFrame(), is_demo, f"Не удалось прочитать CSV: {exc}"
-
-    frame.columns = [str(column).strip().lower() for column in frame.columns]
-    missing = [column for column in REQUIRED_COLUMNS if column not in frame.columns]
-    if missing:
-        return pd.DataFrame(), is_demo, "В файле не хватает колонок: " + ", ".join(missing)
-
-    if "weekday" not in frame.columns and "date" not in frame.columns:
-        return pd.DataFrame(), is_demo, "Добавьте колонку weekday (день недели) или date (дата пары)."
-
-    for column in REQUIRED_COLUMNS:
-        frame[column] = frame[column].fillna("").astype(str).str.strip()
-    frame["start_time"] = frame["start_time"].str.slice(0, 5)
-    frame["end_time"] = frame["end_time"].str.slice(0, 5)
-    frame = frame[(frame["group"] != "") & (frame["subject"] != "")]
-
-    if "weekday" in frame.columns:
-        frame["weekday"] = frame["weekday"].fillna("").astype(str).str.strip().str.lower()
-        frame["weekday_num"] = frame["weekday"].map(WEEKDAYS)
-    else:
-        frame["weekday_num"] = pd.NA
-
-    if "date" in frame.columns:
-        frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.date
-    else:
-        frame["date"] = None
-
-    invalid_time = frame["start_time"].map(lambda value: not is_time(value)) | frame["end_time"].map(lambda value: not is_time(value))
-    invalid_day = frame["weekday_num"].isna() & frame["date"].isna()
-    frame = frame[~invalid_time & ~invalid_day].copy()
-    if frame.empty:
-        return pd.DataFrame(), is_demo, "В файле нет строк с корректными днями и временем."
-    return frame, is_demo, None
-
-
-def is_time(value: str) -> bool:
-    try:
-        time.fromisoformat(value)
-        return True
-    except (TypeError, ValueError):
-        return False
-
-
-def expand_week(frame: pd.DataFrame, week_start: date) -> pd.DataFrame:
-    week_end = week_start + timedelta(days=6)
-    rows: list[dict] = []
-    for record in frame.to_dict("records"):
-        exact_date = record.get("date")
-        if pd.notna(exact_date) and isinstance(exact_date, date):
-            dates = [exact_date] if week_start <= exact_date <= week_end else []
-        elif pd.notna(record.get("weekday_num")):
-            weekday_num = int(record["weekday_num"])
-            dates = [week_start + timedelta(days=offset) for offset in range(7) if (week_start + timedelta(days=offset)).weekday() == weekday_num]
-        else:
-            dates = []
-        for lesson_date in dates:
-            rows.append({**record, "lesson_date": lesson_date})
-    result = pd.DataFrame(rows, columns=[*frame.columns, "lesson_date"])
-    if not result.empty:
-        result = result.sort_values(["lesson_date", "start_time", "group", "room"], kind="stable")
-    return result
-
-
-def render_lessons(lessons: pd.DataFrame, today: date) -> None:
-    if lessons.empty:
-        st.info("На эту дату занятий не найдено.")
+def lessons(rows,now):
+    if rows.empty:
+        st.info("Занятий нет. Проверьте группу и выбранную дату или выберите другую неделю.")
         return
-    for lesson_date, day_rows in lessons.groupby("lesson_date", sort=True):
-        day_name = WEEKDAY_NAMES[lesson_date.weekday()]
-        st.markdown(f"### {day_name}, {lesson_date:%d.%m.%Y}" + (" · Сегодня" if lesson_date == today else ""))
-        for _, lesson in day_rows.iterrows():
-            st.markdown(
-                f"**{lesson['start_time']}–{lesson['end_time']} · {lesson['subject']}**  \n"
-                f"Группа: {lesson['group']} · Преподаватель: {lesson['teacher'] or 'не указан'} · Аудитория: {lesson['room'] or 'не указана'}"
-            )
-            st.divider()
-
-
-st.title("📅 Расписание Shoqan")
-st.caption("Простой просмотр расписания студентов — демонстрационная версия")
+    for day,items in rows.groupby("lesson_date",sort=True):
+        st.markdown(f'<div class="day-label">{DAYS[day.weekday()]} · {day:%d.%m}' + (" · сегодня" if day==now.date() else "") + '</div>',unsafe_allow_html=True)
+        for r in items.to_dict("records"):
+            live = day==now.date() and r["start_time"]<=now.strftime("%H:%M")<r["end_time"]
+            st.markdown(f'''<article class="lesson {'current' if live else ''}"><div class="clock">{e(r['start_time'])}<br><span class="meta">{e(r['end_time'])}</span></div><div><strong>{e(r['subject'])}</strong><div class="details">Ауд. {e(r['room'] or 'не указана')} · {e(r['teacher'] or 'Преподаватель не указан')}</div><div class="details">{e(r['group'])}{' · Идёт сейчас' if live else ''}</div></div></article>''',unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("Данные расписания")
-    uploaded = st.file_uploader("Загрузить CSV расписания", type=["csv"], help="Файл останется только в текущем сеансе браузера.")
-    st.download_button(
-        "Скачать шаблон CSV",
-        data=CSV_TEMPLATE.encode("utf-8-sig"),
-        file_name="schedule_template.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-    st.caption("Поля: weekday или date, group, start_time, end_time, subject, teacher, room")
-
-schedule, is_demo, error = load_schedule(uploaded)
-if error:
-    st.error(error)
-    st.stop()
-
-if is_demo:
-    st.warning("Сейчас показаны вымышленные демонстрационные данные. Они не являются официальным расписанием университета.", icon="⚠️")
-
-today = local_today()
+    st.markdown("### 📘 Shoqan Day")
+    st.caption("Твой учебный день")
+    choices=list(THEMES)
+    initial=st.query_params.get("theme","Светлая")
+    theme=st.selectbox("Тема оформления",choices,index=choices.index(initial) if initial in choices else 0)
+    st.query_params["theme"]=theme
+style(theme)
+if "schedule_raw" not in st.session_state:
+    st.session_state.schedule_raw=(ROOT/"data/schedule_demo.csv").read_bytes()
+    st.session_state.source_name="Демонстрационный набор"
+    st.session_state.is_demo=True
+if "tasks" not in st.session_state:
+    st.session_state.tasks=[]
+schedule=parse_csv(st.session_state.schedule_raw)
+now=datetime.now(TZ)
+today=now.date()
+groups=sorted(schedule.group.unique())
 with st.sidebar:
-    groups = sorted(schedule["group"].dropna().unique().tolist())
-    selected_group = st.selectbox("Группа", groups)
-    selected_week = st.date_input("Неделя с", value=monday_of(today), help="Выберите любую дату нужной недели.")
-    view = st.radio("Раздел", ["Сегодня", "Неделя", "Поиск"], horizontal=False)
-
-week_start = monday_of(selected_week)
-week_rows = expand_week(schedule, week_start)
-group_rows = week_rows[week_rows["group"] == selected_group].copy()
-
-if view == "Сегодня":
-    st.subheader("Занятия сегодня")
-    current_week_rows = expand_week(schedule, monday_of(today))
-    today_rows = current_week_rows[(current_week_rows["group"] == selected_group) & (current_week_rows["lesson_date"] == today)]
-    render_lessons(today_rows, today)
-    st.caption(f"Часовой пояс: Asia/Qyzylorda · Дата: {today:%d.%m.%Y}")
-elif view == "Неделя":
-    st.subheader(f"Неделя {week_start:%d.%m} — {(week_start + timedelta(days=6)):%d.%m.%Y}")
-    render_lessons(group_rows, today)
+    initial=st.query_params.get("group",groups[0])
+    group=st.selectbox("Моя группа",groups,index=groups.index(initial) if initial in groups else 0)
+    st.query_params["group"]=group
+    st.caption("Группа и тема сохраняются в адресе. Добавь страницу в закладки.")
+    st.divider()
+    st.caption("Источник расписания")
+    st.write(st.session_state.source_name)
+    st.caption("Время Казахстана · UTC+5")
+    if st.button("Обновить время",width="stretch"):
+        st.rerun()
+st.markdown('<div class="brand">SHOQAN DAY / STUDENT PLANNER</div>',unsafe_allow_html=True)
+st.title("Твой день. Всё по расписанию.")
+st.caption("Занятия, аудитории и учебные задачи в одном месте.")
+if st.session_state.is_demo:
+    st.info("Демо: занятия и преподаватели вымышлены. Это студенческий проект, не официальное расписание университета.",icon="ℹ️")
 else:
-    st.subheader("Поиск по расписанию")
-    query = st.text_input("Предмет, преподаватель, аудитория или группа", placeholder="Например: базы данных или 203")
-    search_every_group = st.checkbox("Искать по всем группам", value=False)
-    searchable = week_rows if search_every_group else group_rows
-    if query.strip() and searchable.empty:
-        st.info("На выбранную неделю занятий не найдено.")
-    elif query.strip():
-        searchable_text = searchable[REQUIRED_COLUMNS].fillna("").astype(str).agg(" ".join, axis=1)
-        matches = searchable[searchable_text.str.contains(query.strip(), case=False, regex=False)].copy()
-        st.caption(f"Найдено занятий: {len(matches)}")
-        render_lessons(matches, today)
+    st.caption("Ваш CSV · источник не подтверждён университетом · данные действуют в этой сессии")
+day_tab,week_tab,search_tab,task_tab,data_tab=st.tabs(["Мой день","Неделя","Поиск","Задачи","Данные"])
+group_schedule=schedule[schedule.group==group]
+with day_tab:
+    upcoming=expand(group_schedule,today,35)
+    remaining=upcoming[(upcoming.lesson_date>today)|((upcoming.lesson_date==today)&(upcoming.end_time>now.strftime("%H:%M")))]
+    if not remaining.empty:
+        nxt=remaining.iloc[0]
+        live=nxt.lesson_date==today and nxt.start_time<=now.strftime("%H:%M")
+        label="ИДЁТ СЕЙЧАС" if live else "БЛИЖАЙШАЯ ПАРА"
+        st.markdown(f'''<div class="hero"><div class="eyebrow">{label} · {nxt.lesson_date:%d.%m} · {e(nxt.start_time)}–{e(nxt.end_time)}</div><h2>{e(nxt.subject)}</h2><div class="meta">Аудитория {e(nxt.room or 'не указана')} · {e(nxt.teacher or 'Преподаватель не указан')}</div></div>''',unsafe_allow_html=True)
     else:
-        st.info("Введите поисковый запрос.")
-
-st.markdown("---")
-st.caption("Чтобы показать актуальное расписание, загрузите CSV из официального источника университета.")
+        st.success("На ближайшие 35 дней занятий нет. Проверьте группу и источник данных.")
+    todays=upcoming[upcoming.lesson_date==today]
+    a,b,c=st.columns(3)
+    a.metric("Пар сегодня",len(todays))
+    minutes=sum((datetime.strptime(r.end_time,"%H:%M")-datetime.strptime(r.start_time,"%H:%M")).seconds//60 for r in todays.itertuples())
+    b.metric("Учебное время",f"{minutes//60} ч {minutes%60:02} мин")
+    c.metric("Группа",group)
+    lessons(todays,now)
+    st.caption(f"Обновлено в {now:%H:%M} · {today:%d.%m.%Y}. Для актуального статуса нажмите «Обновить время».")
+with week_tab:
+    selected=st.date_input("Любая дата нужной недели",today,key="week_date")
+    start=monday(selected)
+    weekly=expand(group_schedule,start)
+    st.subheader(f"{start:%d.%m} — {start+timedelta(days=6):%d.%m.%Y}")
+    issues=conflicts(weekly)
+    if issues:
+        st.warning("Есть пересечения. Уточните их у ответственного за расписание.")
+        for issue in issues:
+            st.write(issue)
+    mode=st.radio("Вид расписания",["Карточки","Таблица"],horizontal=True)
+    if mode=="Карточки":
+        lessons(weekly,now)
+    else:
+        st.dataframe(weekly[["lesson_date","start_time","end_time","subject","teacher","room"]].rename(columns={"lesson_date":"Дата","start_time":"Начало","end_time":"Конец","subject":"Предмет","teacher":"Преподаватель","room":"Аудитория"}),hide_index=True,width="stretch")
+    d1,d2=st.columns(2)
+    d1.download_button("В календарь (.ics)",ics_export(weekly),"shoqan-week.ics","text/calendar",disabled=weekly.empty,width="stretch")
+    d2.download_button("Скачать неделю CSV",csv_export(weekly[["lesson_date",*COLUMNS[2:]]].rename(columns={"lesson_date":"date"})),"shoqan-week.csv","text/csv",disabled=weekly.empty,width="stretch")
+    st.caption("ICS переносит только выбранную неделю. Это разовый экспорт: изменения в приложении не обновляют календарь автоматически.")
+with search_tab:
+    st.subheader("Найди нужную пару")
+    query=st.text_input("Предмет, преподаватель, аудитория или группа",placeholder="Например, Базы данных или 203")
+    all_groups=st.checkbox("Искать по всем группам")
+    st.caption(f"Поиск в неделе {start:%d.%m} — {start+timedelta(days=6):%d.%m}. Неделю можно сменить в разделе «Неделя».")
+    source=expand(schedule if all_groups else group_schedule,start)
+    if query.strip() and source.empty:
+        st.info("На выбранную неделю занятий нет. Выберите другую дату в разделе «Неделя».")
+    elif query.strip():
+        mask=source[["group","subject","teacher","room"]].fillna("").astype(str).agg(" ".join,axis=1).str.contains(query.strip(),case=False,regex=False)
+        found=source[mask]
+        st.caption(f"Найдено: {len(found)}")
+        lessons(found,now)
+    else:
+        st.info("Введите название предмета, фамилию преподавателя или номер аудитории.")
+with task_tab:
+    st.subheader("Учебные задачи")
+    st.caption("Личный список в текущей сессии. Перед закрытием скачайте копию. Синхронизации между устройствами пока нет.")
+    with st.form("add_task",clear_on_submit=True):
+        title=st.text_input("Что нужно сделать?",max_chars=160)
+        due=st.date_input("Срок",today,key="task_due")
+        added=st.form_submit_button("Добавить задачу")
+    if added:
+        if not title.strip():
+            st.warning("Введите название задачи.")
+        elif len(st.session_state.tasks)>=100:
+            st.error("Максимум 100 задач. Сохраните копию и уберите завершённые.")
+        else:
+            st.session_state.tasks.append({"id":hashlib.sha256((title+datetime.now().isoformat()).encode()).hexdigest()[:12],"title":title.strip(),"due":due.isoformat(),"done":False})
+    for task in sorted(st.session_state.tasks,key=lambda x:(x["done"],x["due"])):
+        overdue=not task["done"] and date.fromisoformat(task["due"])<today
+        task["done"]=st.checkbox(f"{task['title']} · {task['due']}"+(" · просрочено" if overdue else ""),value=task["done"],key="task_"+task["id"])
+    if not st.session_state.tasks:
+        st.info("Пока задач нет. Добавьте первое задание или дедлайн.")
+    st.download_button("Сохранить задачи JSON",json.dumps(st.session_state.tasks,ensure_ascii=False,indent=2).encode(),"shoqan-tasks.json","application/json")
+    restore=st.file_uploader("Восстановить задачи из своей копии",type=["json"])
+    if restore and st.button("Заменить список задач из копии"):
+        try:
+            if restore.size>200_000:
+                raise ValueError
+            tasks=json.loads(restore.getvalue())
+            if not isinstance(tasks,list) or len(tasks)>100:
+                raise ValueError
+            clean=[]
+            for i,t in enumerate(tasks):
+                if not isinstance(t,dict) or not isinstance(t.get("title"),str) or not 1<=len(t["title"].strip())<=160 or not isinstance(t.get("done"),bool):
+                    raise ValueError
+                date.fromisoformat(t["due"])
+                clean.append({"id":f"import_{i}_{hashlib.sha256(restore.getvalue()).hexdigest()[:8]}","title":t["title"].strip(),"due":t["due"],"done":t["done"]})
+            st.session_state.tasks=clean
+            for k in list(st.session_state):
+                if k.startswith("task_") and k!="task_due":
+                    del st.session_state[k]
+            st.rerun()
+        except (ValueError,TypeError,KeyError,UnicodeDecodeError):
+            st.error("Копия повреждена или имеет неподдерживаемый формат. Текущие задачи сохранены.")
+    if st.button("Убрать завершённые задачи"):
+        st.session_state.tasks=[t for t in st.session_state.tasks if not t["done"]]
+        st.rerun()
+with data_tab:
+    st.subheader("Импорт расписания")
+    st.write("Загрузите CSV из разрешённого источника. Проверьте предпросмотр, затем примените файл. Другие посетители не увидят вашу загрузку.")
+    st.download_button("Скачать шаблон",TEMPLATE.encode("utf-8-sig"),"schedule-template.csv","text/csv")
+    upload=st.file_uploader("CSV, до 2 МБ",type=["csv"])
+    if upload:
+        try:
+            candidate=parse_csv(upload.getvalue())
+            st.success(f"Проверено: {len(candidate)} занятий, групп: {candidate.group.nunique()}")
+            st.dataframe(candidate[COLUMNS],hide_index=True,width="stretch")
+            for issue in conflicts(expand(candidate,monday(today))):
+                st.warning(issue)
+            if st.button("Применить расписание",type="primary"):
+                st.session_state.schedule_raw=upload.getvalue()
+                st.session_state.source_name=upload.name
+                st.session_state.is_demo=False
+                st.rerun()
+        except (ValueError,UnicodeDecodeError) as exc:
+            st.error(str(exc))
+    with st.expander("Формат файла и ограничения"):
+        st.write("Обязательные колонки: group, start_time, end_time, subject, teacher, room. Преподавателя и аудиторию можно оставить пустыми.")
+        st.write("В строке заполните либо weekday (Понедельник…Воскресенье), либо date (YYYY-MM-DD). Время строго ЧЧ:ММ. Конец позже начала. UTF-8 или Windows-1251, разделитель запятая или точка с запятой.")
+        st.write("weekday повторяется каждую неделю без каникул. Для точного учебного периода используйте date. Чётные/нечётные недели и автоматические замены пока не поддерживаются.")
+        st.write("Пересечения проверяются для одной группы в выбранной неделе. Занятость аудиторий и общие лекции разных групп уточняйте у диспетчера.")
+    if not st.session_state.is_demo and st.button("Вернуть демонстрационное расписание"):
+        st.session_state.schedule_raw=(ROOT/"data/schedule_demo.csv").read_bytes()
+        st.session_state.source_name="Демонстрационный набор"
+        st.session_state.is_demo=True
+        st.rerun()
+    st.divider()
+    st.subheader("О проекте")
+    st.write("Shoqan Day — студенческий MVP. Для пилота нужен согласованный источник расписания. Интеграция с системами университета, автоматические уведомления и аккаунты находятся в плане развития.")
+st.caption("Shoqan Day · MVP · Источник и ограничения доступны в разделе «Данные»")
