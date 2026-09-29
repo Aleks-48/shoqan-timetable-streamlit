@@ -5,6 +5,7 @@ import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import streamlit as st
+from ai_ui import render as render_ai
 from schedule import COLUMNS, DAYS, TEMPLATE, TZ, conflicts, csv_export, expand, ics_export, monday, parse_csv
 
 ROOT = Path(__file__).parent
@@ -93,7 +94,7 @@ if st.session_state.is_demo:
     st.info("Демо: занятия и преподаватели вымышлены. Это студенческий проект, не официальное расписание университета.",icon="ℹ️")
 else:
     st.caption("Ваш CSV · источник не подтверждён университетом · данные действуют в этой сессии")
-day_tab,week_tab,search_tab,task_tab,data_tab=st.tabs(["Мой день","Неделя","Поиск","Задачи","Данные"])
+day_tab,week_tab,search_tab,task_tab,data_tab,ai_tab=st.tabs(["Мой день","Неделя","Поиск","Задачи","Данные","ИИ-импорт"])
 group_schedule=schedule[schedule.group==group]
 with day_tab:
     upcoming=expand(group_schedule,today,35)
@@ -195,7 +196,7 @@ with data_tab:
     st.subheader("Импорт расписания")
     st.write("Загрузите CSV из разрешённого источника. Проверьте предпросмотр, затем примените файл. Другие посетители не увидят вашу загрузку.")
     st.download_button("Скачать шаблон",TEMPLATE.encode("utf-8-sig"),"schedule-template.csv","text/csv")
-    upload=st.file_uploader("CSV, до 2 МБ",type=["csv"])
+    upload=st.file_uploader("CSV, до 2 МБ",type=["csv"],max_upload_size=2)
     if upload:
         try:
             candidate=parse_csv(upload.getvalue())
@@ -224,3 +225,6 @@ with data_tab:
     st.subheader("О проекте")
     st.write("Shoqan Day — студенческий MVP. Для пилота нужен согласованный источник расписания. Интеграция с системами университета, автоматические уведомления и аккаунты находятся в плане развития.")
 st.caption("Shoqan Day · MVP · Источник и ограничения доступны в разделе «Данные»")
+
+with ai_tab:
+    render_ai(group,today)

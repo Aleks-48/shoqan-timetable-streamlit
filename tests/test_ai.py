@@ -1,0 +1,51 @@
+import json
+import unittest
+from unittest.mock import patch, MagicMock
+from urllib.error import HTTPError
+from ai_service import generate, extract, Budget, AIError, DEFAULT_MODEL
+from schedule import COLUMNS
+
+class AITests(unittest.TestCase):
+    def test_missing_key_and_invalid_model_never_connect(self):
+        with patch('ai_service.urlopen') as network:
+            for key,model in [('',DEFAULT_MODEL),('secret','../bad')]:
+                with self.assertRaises(AIError): generate(key,model,[],{})
+            network.assert_not_called()
+
+    def test_request_and_response(self):
+        reply={'candidates':[{'finishReason':'STOP','content':{'parts':[{'text':'{"rows": []}'}]}}]}
+        response=MagicMock()
+        response.__enter__.return_value.read.return_value=json.dumps(reply).encode()
+        with patch('ai_service.urlopen',return_value=response) as network:
+            self.assertEqual(generate('secret',DEFAULT_MODEL,[{'text':'test'}],{}),{'rows':[]})
+            request=network.call_args.args[0]
+            self.assertNotIn('secret',request.full_url)
+            self.assertEqual(network.call_args.kwargs['timeout'],45)
+
+    def test_errors_are_sanitized(self):
+        with patch('ai_service.urlopen',side_effect=HTTPError('url',429,'SECRET',{},None)):
+            with self.assertRaisesRegex(AIError,'квота'): generate('secret',DEFAULT_MODEL,[],{})
+
+    def test_malformed_and_truncated(self):
+        for reply in [b'invalid',b'{}',json.dumps({'candidates':[{'finishReason':'MAX_TOKENS'}]}).encode()]:
+            response=MagicMock()
+            response.__enter__.return_value.read.return_value=reply
+            with patch('ai_service.urlopen',return_value=response):
+                with self.assertRaises(AIError): generate('secret',DEFAULT_MODEL,[],{})
+
+    def test_upload_and_extraction_validation(self):
+        with patch('ai_service.generate') as model:
+            with self.assertRaises(AIError): extract('key',DEFAULT_MODEL,b'fake','image/png','X')
+            model.assert_not_called()
+            model.return_value={'rows':[{c:'' for c in COLUMNS}],'warnings':['Проверьте дату']}
+            rows,warnings=extract('key',DEFAULT_MODEL,b'%PDF-test','application/pdf','X')
+            self.assertEqual(len(rows),1)
+            model.return_value={'rows':[{'subject':12}],'warnings':[]}
+            with self.assertRaises(AIError): extract('key',DEFAULT_MODEL,b'%PDF-test','application/pdf','X')
+
+    def test_budget(self):
+        budget=Budget()
+        for _ in range(100): budget.claim()
+        with self.assertRaises(AIError): budget.claim()
+
+if __name__=='__main__': unittest.main()
