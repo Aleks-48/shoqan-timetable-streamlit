@@ -41,6 +41,17 @@ class AITests(unittest.TestCase):
                 else:
                     self.assertIn(DEFAULT_MODEL,network.call_args.args[0].full_url)
 
+    def test_fallback_keeps_payload_and_returns_real_response(self):
+        response=MagicMock()
+        response.__enter__.return_value.read.return_value=json.dumps({'candidates':[{'finishReason':'STOP','content':{'parts':[{'text':'{"title":"SQL"}'}]}}]}).encode()
+        failures=[HTTPError('url',503,'private',{},None),HTTPError('url',503,'private',{},None),response]
+        with patch('ai_service.urlopen',side_effect=failures) as network, patch('ai_service.time.sleep'):
+            self.assertEqual(generate('secret',DEFAULT_MODEL,[{'text':'source'}],{'type':'object'}),{'title':'SQL'})
+            requests=[call.args[0] for call in network.call_args_list]
+            self.assertIn(DEFAULT_MODEL,requests[0].full_url)
+            self.assertIn(FALLBACK_MODEL,requests[2].full_url)
+            self.assertEqual(requests[0].data,requests[2].data)
+
     def test_errors_are_sanitized(self):
         with patch('ai_service.urlopen',side_effect=HTTPError('url',429,'SECRET',{},None)):
             with self.assertRaisesRegex(AIError,'квота'): generate('secret',DEFAULT_MODEL,[],{})
