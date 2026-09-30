@@ -1,5 +1,6 @@
 import unittest
 from datetime import date
+import json
 from pathlib import Path
 from schedule import parse_csv, expand, conflicts, ics_export, csv_export, day_gaps, bell_schedule, clock_minutes, coverage_info, date_is_covered
 
@@ -60,10 +61,13 @@ class ScheduleTests(unittest.TestCase):
         second=(dated.replace(',2026-09-28,',',2026-10-03,')
                 .replace('09:00,10:30','11:00,12:30')+',2026-09-28,2026-10-03\n')
         frame=parse_csv((head+row+second).encode())
-        self.assertEqual(frame.attrs['coverage_start'],date(2026,9,28))
-        self.assertEqual(frame.attrs['coverage_end'],date(2026,10,3))
+        self.assertEqual(frame.attrs['coverage_start'],'2026-09-28')
+        self.assertEqual(frame.attrs['coverage_end'],'2026-10-03')
+        json.dumps(frame.attrs)
         restored=parse_csv(csv_export(frame.drop(columns='weekday_num')))
         self.assertEqual(restored.attrs,frame.attrs)
+        filtered=frame[frame.group=='��-101']
+        self.assertTrue(date_is_covered(filtered,date(2026,10,2)))
         inconsistent=(dated.replace(',2026-09-28,',',2026-10-03,')
                       .replace('09:00,10:30','11:00,12:30')+',2026-09-29,2026-10-03\n')
         invalid=[head+dated+',2026-10-03,2026-09-28\n',

@@ -56,7 +56,9 @@ def coverage_info(frame):
                 "dates": dates}
     start, end = (frame.attrs.get(field) for field in _COVERAGE_FIELDS)
     if start is not None and end is not None:
-        return {"kind": "interval", "start": start, "end": end, "dates": set()}
+        # Keep DataFrame.attrs JSON-serializable for Streamlit and pandas transport.
+        return {"kind": "interval", "start": date.fromisoformat(start),
+                "end": date.fromisoformat(end), "dates": set()}
     return {"kind": "listed_dates", "start": None, "end": None, "dates": dates}
 
 def date_is_covered(frame, day):
@@ -151,7 +153,8 @@ def _parse_csv(raw: bytes) -> pd.DataFrame:
         raise ValueError("В файле нет занятий.")
     result = pd.DataFrame(rows)
     if declared_coverage is not None:
-        result.attrs.update(dict(zip(_COVERAGE_FIELDS, declared_coverage)))
+        result.attrs.update({field: day.isoformat()
+                             for field, day in zip(_COVERAGE_FIELDS, declared_coverage)})
     if result.duplicated(subset=COLUMNS).any():
         raise ValueError("В файле есть полные дубликаты занятий. Удалите их.")
     return result
