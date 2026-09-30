@@ -3,7 +3,7 @@ import html
 from datetime import timedelta
 import pandas as pd
 import streamlit as st
-from schedule import DAYS, expand, location, ics_export
+from schedule import DAYS, expand, location, ics_export, date_is_covered
 
 def week_grid(rows, start):
     """Keep all lessons, including simultaneous and nonstandard intervals."""
@@ -34,8 +34,11 @@ def room_snapshot(schedule, day, begin, end):
     result=[]
     for building,room in inventory.itertuples(index=False,name=None):
         hits=rows[(rows.building==building)&(rows.room==room)&(rows.start_time<end)&(rows.end_time>begin)]
+        status=('Есть занятия' if len(hits)
+                else 'Нет записей на интервал' if date_is_covered(schedule,day)
+                else 'Нет данных о покрытии даты')
         result.append({'Корпус':building or 'Не указан','Аудитория':room,
-                       'По загруженным данным':'Есть занятия' if len(hits) else 'Нет записей на интервал',
+                       'По загруженным данным':status,
                        'Занятия':'; '.join(f'{r.start_time}–{r.end_time} · {r.group} · {r.subject}' for r in hits.itertuples())})
     return pd.DataFrame(result,columns=['Корпус','Аудитория','По загруженным данным','Занятия'])
 
@@ -49,9 +52,19 @@ def render_directory(schedule, start, today, lessons, now):
             st.info('В источнике не указаны преподаватели.')
             return
         teacher=st.selectbox('Преподаватель',names,key='directory_teacher')
-        rows=expand(schedule[schedule.teacher==teacher],start)
-        st.caption(f'{start:%d.%m} — {start+timedelta(days=6):%d.%m.%Y} · занятий: {len(rows)}')
-        lessons(rows,now)
+        teacher_rows=schedule[schedule.teacher==teacher]
+        teacher_rows.attrs.update(schedule.attrs)
+        unknown=[start+timedelta(days=i) for i in range(7) if not date_is_covered(teacher_rows,start+timedelta(days=i))]
+        if unknown:
+            st.warning('Нет данных о покрытии для: '+', '.join(day.strftime('%d.%m') for day in unknown)+'.')
+        rows=expand(teacher_rows,start)
+        st.caption(f'{start:%d.%m} - {start+timedelta(days=6):%d.%m.%Y} · занятий: {len(rows)}')
+        if rows.empty and unknown:
+            st.info('В загруженных данных нет занятий на неделю; часть дат не покрыта источником.')
+        elif rows.empty:
+            st.info('В подтверждённом периоде занятий преподавателя на этой неделе нет.')
+        else:
+            lessons(rows,now)
         st.download_button('Неделя преподавателя в календарь',ics_export(rows),'teacher-week.ics','text/calendar',disabled=rows.empty)
     else:
         st.info('Отсутствие записей не гарантирует, что аудитория свободна: источник может включать не все группы. Это просмотр расписания, не бронирование.')

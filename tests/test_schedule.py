@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 from pathlib import Path
-from schedule import parse_csv, expand, conflicts, ics_export, csv_export, day_gaps, bell_schedule, clock_minutes
+from schedule import parse_csv, expand, conflicts, ics_export, csv_export, day_gaps, bell_schedule, clock_minutes, coverage_info, date_is_covered
 
 HEADER = 'weekday,date,group,start_time,end_time,subject,teacher,room\n'
 ROW = 'Понедельник,,ИС-101,09:00,10:30,Алгоритмы,Преподаватель,101\n'
@@ -52,6 +52,34 @@ class ScheduleTests(unittest.TestCase):
         f=parse_csv((HEADER+ROW.replace('Понедельник,,',',2026-09-28,')).encode())
         self.assertEqual(len(expand(f,date(2026,9,28))),1)
         self.assertTrue(expand(f,date(2026,10,5)).empty)
+
+    def test_explicit_coverage_metadata_validates_and_round_trips(self):
+        head=HEADER.rstrip()+',coverage_start,coverage_end\n'
+        dated=ROW.replace('Понедельник,,',',2026-09-28,').rstrip()
+        row=dated+',2026-09-28,2026-10-03\n'
+        second=(dated.replace(',2026-09-28,',',2026-10-03,')
+                .replace('09:00,10:30','11:00,12:30')+',2026-09-28,2026-10-03\n')
+        frame=parse_csv((head+row+second).encode())
+        self.assertEqual(frame.attrs['coverage_start'],date(2026,9,28))
+        self.assertEqual(frame.attrs['coverage_end'],date(2026,10,3))
+        restored=parse_csv(csv_export(frame.drop(columns='weekday_num')))
+        self.assertEqual(restored.attrs,frame.attrs)
+        inconsistent=(dated.replace(',2026-09-28,',',2026-10-03,')
+                      .replace('09:00,10:30','11:00,12:30')+',2026-09-29,2026-10-03\n')
+        invalid=[head+dated+',2026-10-03,2026-09-28\n',
+                 head+dated+',2026-09-29,2026-10-03\n',
+                 head+row+inconsistent,
+                 HEADER.rstrip()+',coverage_start\n'+ROW.rstrip()+',2026-09-28\n']
+        for content in invalid:
+            with self.subTest(content=content),self.assertRaises(ValueError):
+                parse_csv(content.encode())
+
+    def test_mixed_weekday_and_exact_rows_do_not_imply_global_coverage(self):
+        dated=ROW.replace('Понедельник,,',',2026-09-29,').replace('09:00,10:30','11:00,12:30')
+        frame=parse_csv((HEADER+ROW+dated).encode())
+        self.assertEqual(coverage_info(frame)['kind'],'mixed')
+        self.assertTrue(date_is_covered(frame,date(2026,9,29)))
+        self.assertFalse(date_is_covered(frame,date(2026,9,30)))
 
     def test_overlap_and_adjacent(self):
         f=parse_csv((HEADER+ROW+ROW.replace('09:00,10:30,Алгоритмы','10:00,11:00,Сети')).encode())
