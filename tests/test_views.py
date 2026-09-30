@@ -27,4 +27,10 @@ class ViewsTests(unittest.TestCase):
     def test_empty_day_does_not_claim_confirmed_availability(self):
         rooms=room_snapshot(parse_csv(DATA.encode()),date(2026,9,29),'08:30','09:20')
         self.assertEqual(len(rooms),2)
+        self.assertTrue((rooms['По загруженным данным']=='Нет данных о покрытии даты').all())
+    def test_room_snapshot_accepts_explicitly_covered_empty_day(self):
+        lines=DATA.strip().splitlines()
+        lines[0]+=',coverage_start,coverage_end'
+        lines=[lines[0],*(line+',2026-09-28,2026-09-30' for line in lines[1:])]
+        rooms=room_snapshot(parse_csv('\n'.join(lines).encode()),date(2026,9,29),'08:30','09:20')
         self.assertTrue((rooms['По загруженным данным']=='Нет записей на интервал').all())

@@ -10,7 +10,7 @@ from browser_storage import restore_pending, render_controls, sync_browser
 from study_plan import allocate
 from ai_ui import render as render_ai
 from planner_views import week_grid, render_directory
-from schedule import bell_schedule, clock_minutes, day_gaps, location, COLUMNS, DAYS, TEMPLATE, TZ, conflicts, csv_export, expand, ics_export, monday, parse_csv
+from schedule import bell_schedule, clock_minutes, day_gaps, location, COLUMNS, DAYS, TEMPLATE, TZ, conflicts, csv_export, expand, ics_export, monday, parse_csv, coverage_info, date_is_covered
 
 ROOT = Path(__file__).parent
 st.set_page_config(page_title="Shoqan Day · Расписание", page_icon="📘", layout="wide")
@@ -115,19 +115,28 @@ with settings_tab:
     data_tab,ai_tab,search_tab,directory_tab=st.tabs(["Данные","ИИ-импорт","Поиск","Справочник"])
     st.caption("Сохранение на устройстве и перенос полной копии — в разделе «Данные».")
 group_schedule=schedule[schedule.group==group]
+group_schedule.attrs.update(schedule.attrs)
+group_coverage=coverage_info(group_schedule)
+if group_coverage["kind"] == "interval":
+    st.info(f"Покрытие расписания группы подтверждено: {group_coverage['start']:%d.%m.%Y}–{group_coverage['end']:%d.%m.%Y}.")
+elif group_coverage["kind"] in ("listed_dates", "mixed"):
+    st.warning("В CSV нет явного интервала покрытия. Даты без строк расписания считаются неизвестными, а не свободными.")
 with day_tab:
     upcoming=expand(group_schedule,today,35)
     remaining=upcoming[(upcoming.lesson_date>today)|((upcoming.lesson_date==today)&(upcoming.end_time>now.strftime("%H:%M")))]
     if not remaining.empty:
         nxt=remaining.iloc[0]
         live=nxt.lesson_date==today and nxt.start_time<=now.strftime("%H:%M")
-        label="ИДЁТ СЕЙЧАС" if live else "БЛИЖАЙШЕЕ ЗАНЯТИЕ"
+        gap_unknown=any(not date_is_covered(group_schedule,today+timedelta(days=i)) for i in range((nxt.lesson_date-today).days))
+        label="ИДЁТ СЕЙЧАС" if live else "БЛИЖАЙШЕЕ ИЗВЕСТНОЕ ЗАНЯТИЕ" if gap_unknown else "БЛИЖАЙШЕЕ ЗАНЯТИЕ"
         st.markdown(f'''<div class="hero"><div class="eyebrow">{label} · {nxt.lesson_date:%d.%m} · {e(nxt.start_time)}–{e(nxt.end_time)}</div><h2>{e(nxt.subject)}</h2><div class="meta">Место: {e(location(nxt))} · {e(nxt.teacher or 'Преподаватель не указан')}</div></div>''',unsafe_allow_html=True)
-    else:
+    elif all(date_is_covered(group_schedule,today+timedelta(days=offset)) for offset in range(35)):
         st.success("На ближайшие 35 дней занятий нет. Проверьте группу и источник данных.")
+    else:
+        st.info("Ближайших занятий из файла не найдено; часть дат не входит в подтверждённое покрытие расписания.")
     todays=upcoming[upcoming.lesson_date==today]
     a,b,c=st.columns(3)
-    a.metric("Занятий сегодня",len(todays))
+    a.metric("Записей о занятиях сегодня",len(todays))
     minutes=sum((datetime.strptime(r.end_time,"%H:%M")-datetime.strptime(r.start_time,"%H:%M")).seconds//60 for r in todays.itertuples())
     b.metric("Учебное время",f"{minutes//60} ч {minutes%60:02} мин")
     c.metric("Группа",group)
@@ -137,7 +146,12 @@ with day_tab:
         for task in pending[:3]:
             st.write(f"{task['title']} · до {task['due']} · {task.get('minutes',50)} мин")
         st.caption("План подготовки и отметка выполнения — в разделе «Мой план».")
-    lessons(todays,now)
+    if not date_is_covered(group_schedule,today):
+        st.info("Сегодня нет данных о расписании: дата вне подтверждённого покрытия.")
+    elif todays.empty:
+        st.info("На сегодня в подтверждённом покрытии занятий нет.")
+    else:
+        lessons(todays,now)
     gaps=day_gaps(todays)
     if gaps:
         st.subheader("Перерывы и окна сегодня")
@@ -161,6 +175,9 @@ with week_tab:
     selected=st.date_input("Любая дата нужной недели",value=None,key="week_date") or today
     start=monday(selected)
     weekly=expand(group_schedule,start)
+    unknown_week=[start+timedelta(days=i) for i in range(7) if not date_is_covered(group_schedule,start+timedelta(days=i))]
+    if unknown_week:
+        st.warning("В расписании недели нет данных для: " + ", ".join(d.strftime("%d.%m") for d in unknown_week) + ". Пустые ячейки этих дат не подтверждают, что занятий нет.")
     st.subheader(f"{start:%d.%m} — {start+timedelta(days=6):%d.%m.%Y}")
     issues=conflicts(weekly)
     if issues:
@@ -169,10 +186,13 @@ with week_tab:
             st.write(issue)
     mode=st.radio("Вид расписания",["Карточки","Таблица","Сетка недели"],horizontal=True)
     if mode=="Карточки":
-        lessons(weekly,now)
+        if weekly.empty:
+            st.info("В файле нет записей на эту неделю; даты без покрытия отмечены выше как неизвестные." if unknown_week else "В подтверждённом периоде занятий на эту неделю нет.")
+        else:
+            lessons(weekly,now)
     elif mode=="Сетка недели":
         if weekly.empty:
-            st.info("На выбранную неделю занятий нет.")
+            st.info("В файле нет записей на эту неделю; даты без покрытия отмечены выше как неизвестные." if unknown_week else "В подтверждённом периоде занятий на эту неделю нет.")
         else:
             st.markdown(week_grid(weekly,start),unsafe_allow_html=True)
             st.caption("На узком экране сетку можно прокручивать вбок. Каждая строка — точный интервал занятия; пересекающиеся занятия не скрываются.")
@@ -258,9 +278,14 @@ with task_tab:
             import pandas as pd
             st.download_button("Скачать предложенный план ICS",ics_export(pd.DataFrame(plan_rows)),"study-plan.ics","text/calendar")
         if unplaced:
-            st.warning("Всё не помещается до сроков или выходит за горизонт 14 дней. Измените доступное время либо объём задания.")
-            st.dataframe(unplaced,hide_index=True,width="stretch")
-        st.caption("До 50 минут в блоке, затем 10 минут перерыва. Вокруг занятий оставляем 10 минут. Время задания задаёте вы; завершённым оно становится только по вашей отметке.")
+            if any(item.get('coverage_unknown') for item in unplaced):
+                st.warning("Часть задания не размещена: для части нужных дат нет подтверждённого покрытия расписания. Обновите источник или укажите его интервал покрытия.")
+            else:
+                st.warning("Часть задания не разместилась в 14-дневном горизонте до срока при выбранных часах и дневном лимите. Проверьте срок, доступные окна и лимит.")
+            st.dataframe([{**{k:v for k,v in item.items() if k!='coverage_unknown'},
+                           'Расписание неизвестно':item.get('coverage_unknown',False)} for item in unplaced],
+                          hide_index=True,width="stretch")
+        st.caption("Блоки подготовки — от 15 до 50 минут; между блоками и занятиями остаётся 10 минут. Время задания задаёте вы; завершённым оно становится только по вашей отметке. Для снимка расписания планируются только даты внутри загруженного периода; дальше покрытие неизвестно.")
     st.download_button("Сохранить задачи JSON",json.dumps(st.session_state.tasks,ensure_ascii=False,indent=2).encode(),"shoqan-tasks.json","application/json")
     restore=st.file_uploader("Восстановить задачи из своей копии",type=["json"])
     if restore and st.button("Заменить список задач из копии"):
@@ -313,6 +338,11 @@ with data_tab:
         try:
             candidate=parse_csv(upload.getvalue())
             st.success(f"Проверено: {len(candidate)} занятий, групп: {candidate.group.nunique()}")
+            candidate_coverage=coverage_info(candidate)
+            if candidate_coverage['kind']=='interval':
+                st.info(f"Покрытие явно задано: {candidate_coverage['start']:%d.%m.%Y}–{candidate_coverage['end']:%d.%m.%Y}.")
+            elif candidate_coverage['kind'] in ('listed_dates','mixed'):
+                st.warning("Интервал покрытия не указан: даты без записей останутся неизвестными и не будут использоваться для свободных окон.")
             st.dataframe(candidate[COLUMNS],hide_index=True,width="stretch")
             for issue in conflicts(expand(candidate,monday(today))):
                 st.warning(issue)
@@ -323,13 +353,16 @@ with data_tab:
                 st.rerun()
         except (ValueError,UnicodeDecodeError) as exc:
             st.error(str(exc))
-    st.download_button("Сохранить всё расписание CSV",csv_export(schedule[COLUMNS]),"shoqan-schedule.csv","text/csv")
+    schedule_export=schedule[COLUMNS].copy()
+    schedule_export.attrs.update(schedule.attrs)
+    st.download_button("Сохранить всё расписание CSV",csv_export(schedule_export),"shoqan-schedule.csv","text/csv")
     with st.expander("Формат файла и ограничения"):
         st.write("Необязательные колонки: building — корпус, lesson_type — тип занятия (например, Л, ЛЗ, СПЗ). Старые CSV без этих колонок тоже поддерживаются.")
         st.write("Одно занятие обычно длится 50 минут. Соседние занятия одного предмета сохраняйте отдельными строками: перерыв между ними не входит в учебное время.")
         st.write("Обязательные колонки: group, start_time, end_time, subject, teacher, room. Преподавателя и аудиторию можно оставить пустыми.")
         st.write("В строке заполните либо weekday (Понедельник…Воскресенье), либо date (YYYY-MM-DD). Время строго ЧЧ:ММ. Конец позже начала. UTF-8 или Windows-1251, разделитель запятая или точка с запятой.")
         st.write("weekday повторяется каждую неделю без каникул. Для точного учебного периода используйте date. Чётные/нечётные недели и автоматические замены пока не поддерживаются.")
+        st.write("Для date-расписания можно явно указать одинаковые coverage_start и coverage_end (YYYY-MM-DD) в каждой строке. Только тогда дни без занятий между этими границами подтверждаются как свободные. Без метаданных учитываются лишь даты с записями; остальные даты неизвестны. Метаданные не применяются к weekday-расписаниям.")
         st.write("Пересечения проверяются для одной группы в выбранной неделе. Занятость аудиторий и общие лекции разных групп уточняйте у диспетчера.")
     if not st.session_state.is_demo and st.button("Вернуть демонстрационное расписание"):
         st.session_state.schedule_raw=(ROOT/"data/schedule_demo.csv").read_bytes()

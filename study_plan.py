@@ -1,14 +1,19 @@
 """Deterministic placement of confirmed study tasks around classes."""
 from datetime import datetime, timedelta, time
-from schedule import expand, TZ, clock_minutes
+from schedule import expand, TZ, clock_minutes, coverage_info, date_is_covered
 
 def allocate(tasks, schedule, now, start_hour=9, end_hour=20, daily_limit=120, horizon=14):
     if not 0<=start_hour<end_hour<=24 or not 15<=daily_limit<=480 or not 1<=horizon<=30:
         raise ValueError('Некорректные границы планирования.')
     rows=expand(schedule,now.date(),horizon)
+    # Date-only files without a declared interval cover only dates with rows.
+    # Explicit coverage metadata may confirm empty dates between its bounds.
+    coverage = coverage_info(schedule)
     slots=[]
     for offset in range(horizon):
         day=now.date()+timedelta(days=offset)
+        if not date_is_covered(schedule, day):
+            continue
         cursor=start_hour*60
         if offset==0:
             cursor=max(cursor,now.hour*60+now.minute+(1 if now.second or now.microsecond else 0))
@@ -24,6 +29,10 @@ def allocate(tasks, schedule, now, start_hour=9, end_hour=20, daily_limit=120, h
     placed,unplaced,used=[],[],{}
     for task in sorted((t for t in tasks if not t['done']),key=lambda t:(t['due'],t['id'])):
         deadline=datetime.fromisoformat(task['due']).date()
+        check_end = min(deadline, now.date()+timedelta(days=horizon-1))
+        coverage_unknown = (coverage["kind"] != "recurring" and check_end >= now.date() and
+                            any(not date_is_covered(schedule, now.date()+timedelta(days=day_offset))
+                                for day_offset in range((check_end-now.date()).days+1)))
         remaining=int(task.get('minutes',50))
         for slot in slots:
             day,begin,end=slot
@@ -32,6 +41,10 @@ def allocate(tasks, schedule, now, start_hour=9, end_hour=20, daily_limit=120, h
             capacity=daily_limit-used.get(day,0)
             while end-slot[1]>=15 and capacity>=15 and remaining>0:
                 duration=min(50,remaining,end-slot[1],capacity)
+                # Avoid stranding a tail that cannot form a valid 15-minute block.
+                tail=remaining-duration
+                if 0 < tail < 15 and duration-(15-tail) >= 15:
+                    duration -= 15-tail
                 if duration<15:
                     break
                 begin=slot[1]
@@ -43,7 +56,8 @@ def allocate(tasks, schedule, now, start_hour=9, end_hour=20, daily_limit=120, h
                 capacity-=duration
                 slot[1]+=duration+10
         if remaining:
-            unplaced.append({'Задание':task['title'],'Не размещено, мин':remaining,'Срок':task['due']})
+            unplaced.append({'Задание':task['title'],'Не размещено, мин':remaining,'Срок':task['due'],
+                             'coverage_unknown': coverage_unknown})
     return placed,unplaced
 
 def validate_assignment(result, source=None):
