@@ -6,9 +6,17 @@ def allocate(tasks, schedule, now, start_hour=9, end_hour=20, daily_limit=120, h
     if not 0<=start_hour<end_hour<=24 or not 15<=daily_limit<=480 or not 1<=horizon<=30:
         raise ValueError('Некорректные границы планирования.')
     rows=expand(schedule,now.date(),horizon)
+    # Date-only imports are finite snapshots. Within their bounds, missing
+    # dates are known to be free; dates beyond them have unknown coverage.
+    dated = schedule[schedule["date"].notna()]
+    recurring = schedule["weekday_num"].notna().any()
+    coverage_start = dated["date"].min() if not dated.empty else None
+    coverage_end = dated["date"].max() if not dated.empty else None
     slots=[]
     for offset in range(horizon):
         day=now.date()+timedelta(days=offset)
+        if not recurring and coverage_start is not None and not coverage_start <= day <= coverage_end:
+            continue
         cursor=start_hour*60
         if offset==0:
             cursor=max(cursor,now.hour*60+now.minute+(1 if now.second or now.microsecond else 0))
@@ -32,6 +40,10 @@ def allocate(tasks, schedule, now, start_hour=9, end_hour=20, daily_limit=120, h
             capacity=daily_limit-used.get(day,0)
             while end-slot[1]>=15 and capacity>=15 and remaining>0:
                 duration=min(50,remaining,end-slot[1],capacity)
+                # Avoid stranding a tail that cannot form a valid 15-minute block.
+                tail=remaining-duration
+                if 0 < tail < 15 and duration-(15-tail) >= 15:
+                    duration -= 15-tail
                 if duration<15:
                     break
                 begin=slot[1]
@@ -43,7 +55,8 @@ def allocate(tasks, schedule, now, start_hour=9, end_hour=20, daily_limit=120, h
                 capacity-=duration
                 slot[1]+=duration+10
         if remaining:
-            unplaced.append({'Задание':task['title'],'Не размещено, мин':remaining,'Срок':task['due']})
+            unplaced.append({'Задание':task['title'],'Не размещено, мин':remaining,'Срок':task['due'],
+                             'coverage_unknown': not recurring and coverage_end is not None and deadline > coverage_end})
     return placed,unplaced
 
 def validate_assignment(result, source=None):

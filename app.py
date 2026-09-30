@@ -117,12 +117,20 @@ with settings_tab:
 group_schedule=schedule[schedule.group==group]
 with day_tab:
     upcoming=expand(group_schedule,today,35)
+    snapshot_rows=group_schedule[group_schedule["date"].notna()]
+    snapshot_only=not group_schedule["weekday_num"].notna().any() and not snapshot_rows.empty
+    snapshot_start=snapshot_rows["date"].min() if snapshot_only else None
+    snapshot_end=snapshot_rows["date"].max() if snapshot_only else None
+    if snapshot_only:
+        st.caption(f"Снимок расписания охватывает {snapshot_start:%d.%m.%Y}–{snapshot_end:%d.%m.%Y}; за пределами периода расписание неизвестно.")
     remaining=upcoming[(upcoming.lesson_date>today)|((upcoming.lesson_date==today)&(upcoming.end_time>now.strftime("%H:%M")))]
     if not remaining.empty:
         nxt=remaining.iloc[0]
         live=nxt.lesson_date==today and nxt.start_time<=now.strftime("%H:%M")
         label="ИДЁТ СЕЙЧАС" if live else "БЛИЖАЙШЕЕ ЗАНЯТИЕ"
         st.markdown(f'''<div class="hero"><div class="eyebrow">{label} · {nxt.lesson_date:%d.%m} · {e(nxt.start_time)}–{e(nxt.end_time)}</div><h2>{e(nxt.subject)}</h2><div class="meta">Место: {e(location(nxt))} · {e(nxt.teacher or 'Преподаватель не указан')}</div></div>''',unsafe_allow_html=True)
+    elif snapshot_only and snapshot_end < today+timedelta(days=34):
+        st.info(f"В загруженном снимке занятий дальше {snapshot_end:%d.%m.%Y} нет. После этой даты расписание неизвестно; проверьте источник.")
     else:
         st.success("На ближайшие 35 дней занятий нет. Проверьте группу и источник данных.")
     todays=upcoming[upcoming.lesson_date==today]
@@ -137,7 +145,10 @@ with day_tab:
         for task in pending[:3]:
             st.write(f"{task['title']} · до {task['due']} · {task.get('minutes',50)} мин")
         st.caption("План подготовки и отметка выполнения — в разделе «Мой план».")
-    lessons(todays,now)
+    if snapshot_only and not snapshot_start<=today<=snapshot_end:
+        st.info("Сегодня вне периода загруженного снимка; расписание на эту дату неизвестно.")
+    else:
+        lessons(todays,now)
     gaps=day_gaps(todays)
     if gaps:
         st.subheader("Перерывы и окна сегодня")
@@ -258,9 +269,14 @@ with task_tab:
             import pandas as pd
             st.download_button("Скачать предложенный план ICS",ics_export(pd.DataFrame(plan_rows)),"study-plan.ics","text/calendar")
         if unplaced:
-            st.warning("Всё не помещается до сроков или выходит за горизонт 14 дней. Измените доступное время либо объём задания.")
-            st.dataframe(unplaced,hide_index=True,width="stretch")
-        st.caption("До 50 минут в блоке, затем 10 минут перерыва. Вокруг занятий оставляем 10 минут. Время задания задаёте вы; завершённым оно становится только по вашей отметке.")
+            if any(item.get('coverage_unknown') for item in unplaced):
+                st.warning("Часть задания не размещена: расписание после конца снимка неизвестно. Обновите расписание, чтобы планировать на эти даты.")
+            else:
+                st.warning("Часть задания не помещается в срок при заданных часах и дневном лимите. Увеличьте доступное время или сократите задачу.")
+            st.dataframe([{**{k:v for k,v in item.items() if k!='coverage_unknown'},
+                           'Расписание неизвестно':item.get('coverage_unknown',False)} for item in unplaced],
+                          hide_index=True,width="stretch")
+        st.caption("Блоки подготовки — от 15 до 50 минут; между блоками и занятиями остаётся 10 минут. Время задания задаёте вы; завершённым оно становится только по вашей отметке. Для снимка расписания планируются только даты внутри загруженного периода; дальше покрытие неизвестно.")
     st.download_button("Сохранить задачи JSON",json.dumps(st.session_state.tasks,ensure_ascii=False,indent=2).encode(),"shoqan-tasks.json","application/json")
     restore=st.file_uploader("Восстановить задачи из своей копии",type=["json"])
     if restore and st.button("Заменить список задач из копии"):
