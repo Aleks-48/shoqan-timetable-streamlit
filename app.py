@@ -270,7 +270,7 @@ with task_tab:
             st.download_button("Скачать предложенный план ICS",ics_export(pd.DataFrame(plan_rows)),"study-plan.ics","text/calendar")
         if unplaced:
             if any(item.get('coverage_unknown') for item in unplaced):
-                st.warning("Часть задания не размещена: расписание после конца снимка неизвестно. Обновите расписание, чтобы планировать на эти даты.")
+                st.warning("Часть задания не размещена: за пределами снимка расписание неизвестно. Обновите источник расписания, чтобы планировать на эти даты.")
             else:
                 st.warning("Часть задания не помещается в срок при заданных часах и дневном лимите. Увеличьте доступное время или сократите задачу.")
             st.dataframe([{**{k:v for k,v in item.items() if k!='coverage_unknown'},

@@ -32,6 +32,8 @@ def allocate(tasks, schedule, now, start_hour=9, end_hour=20, daily_limit=120, h
     placed,unplaced,used=[],[],{}
     for task in sorted((t for t in tasks if not t['done']),key=lambda t:(t['due'],t['id'])):
         deadline=datetime.fromisoformat(task['due']).date()
+        coverage_unknown = (not recurring and coverage_start is not None and
+                            (deadline > coverage_end or (now.date() < coverage_start and deadline >= now.date())))
         remaining=int(task.get('minutes',50))
         for slot in slots:
             day,begin,end=slot
@@ -56,7 +58,7 @@ def allocate(tasks, schedule, now, start_hour=9, end_hour=20, daily_limit=120, h
                 slot[1]+=duration+10
         if remaining:
             unplaced.append({'Задание':task['title'],'Не размещено, мин':remaining,'Срок':task['due'],
-                             'coverage_unknown': not recurring and coverage_end is not None and deadline > coverage_end})
+                             'coverage_unknown': coverage_unknown})
     return placed,unplaced
 
 def validate_assignment(result, source=None):

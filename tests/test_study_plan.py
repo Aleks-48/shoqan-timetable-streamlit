@@ -36,6 +36,12 @@ class PlanTests(unittest.TestCase):
         self.assertFalse(left)
         self.assertTrue(rows)
         self.assertTrue(all(r['Дата']==datetime(2026,9,29).date() for r in rows))
+    def test_dates_before_snapshot_are_unknown_too(self):
+        schedule=parse_csv((HEADER+'2026-09-30,X,10:00,10:50,Class,T,1\n').encode())
+        rows,left=allocate([self.task(due='2026-09-29',minutes=30)],schedule,
+                           datetime(2026,9,29,8,tzinfo=TZ))
+        self.assertFalse(rows)
+        self.assertTrue(left[0]['coverage_unknown'])
     def test_sixty_minutes_split_without_stranding_short_tail(self):
         raw=HEADER+'2026-09-29,X,12:00,12:50,Class,T,1\n'
         rows,left=allocate([self.task(minutes=60)],parse_csv(raw.encode()),
