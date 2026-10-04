@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 from schedule import parse_csv, expand
-from planner_views import room_snapshot, week_grid
+from planner_views import room_snapshot, week_grid, study_rows
 
 HEADER='date,group,start_time,end_time,subject,teacher,room,building,lesson_type\n'
 DATA=HEADER+'2026-09-28,A,08:30,09:20,<script>alert(1)</script>,T,101,East,Л\n2026-09-28,B,08:30,09:20,Second,T,101,West,Л\n2026-09-28,C,08:45,09:35,Third,T,101,East,ЛЗ\n'
@@ -21,8 +21,19 @@ class ViewsTests(unittest.TestCase):
         self.assertNotIn('<script>',grid)
         self.assertIn('&lt;script&gt;',grid)
         self.assertIn('08:45',grid)
-        self.assertEqual(grid.count('class="grid-lesson"'),3)
+        self.assertEqual(grid.count('grid-lesson class-block'),3)
         self.assertIn('Воскресенье',grid)
+        self.assertIn('week-mobile',grid)
+    def test_saved_preparation_blocks_render_as_mint_calendar_events(self):
+        start=date(2026,9,28)
+        tasks=[{'id':'task1','title':'SQL <script>','blocks':[{'id':'a'*20,'date':'2026-09-28',
+            'start_time':'09:00','end_time':'09:50','minutes':50,'done':True}]}]
+        planned=study_rows(tasks,'X',start)
+        grid=week_grid(planned,start,{start})
+        self.assertIn('study-block completed',grid)
+        self.assertIn('Подготовка: SQL &lt;script&gt;',grid)
+        self.assertNotIn('SQL <script>',grid)
+        self.assertIn('Подготовка к заданию',grid)
 
     def test_empty_day_does_not_claim_confirmed_availability(self):
         rooms=room_snapshot(parse_csv(DATA.encode()),date(2026,9,29),'08:30','09:20')

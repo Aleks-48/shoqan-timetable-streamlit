@@ -4,40 +4,60 @@ import json
 from pathlib import Path
 import streamlit as st
 from user_profile import decode_profile
+from group_profiles import split_group_schedules, load_group_profile, remember_active_profile
 
 
-def restore_pending():
-    p=st.session_state.pop('_profile_pending',None)
+def restore_pending(state=None):
+    state=st.session_state if state is None else state
+    p=state.pop('_profile_pending',None)
     if p:
-        st.session_state.tasks=p['tasks']
-        st.session_state.schedule_raw=p['schedule'].encode('utf-8')
-        st.session_state.source_name=p['source_name']
-        st.session_state.is_demo=p['is_demo']
-        for key in list(st.session_state):
-            if key.startswith(('task_','edit_','assignment_','ai_draft')):
-                del st.session_state[key]
+        if p['version']==2:
+            state.group_profiles=p['profiles']
+            active=p['active_group']
+        else:
+            group=p['preferences']['group']
+            profiles=split_group_schedules(
+                p['schedule'].encode('utf-8'),p['source_name'],p['is_demo'],tasks_by_group={group:p['tasks']})
+            active=group if group in profiles else next(iter(profiles))
+            state.group_profiles=profiles
+        state.active_group_selector=active
+        state._active_group_key=''
+        state._requested_group_key=active
+        for key in list(state):
+            if key.startswith(('task_','edit_','assignment_','ai_draft','plan_block_')):
+                del state[key]
         prefs=p['preferences']
         for key,value in [('plan_begin',prefs['begin']),('plan_end',prefs['end']),('plan_limit',prefs['limit'])]:
-            st.session_state[key]=value
-        st.query_params['theme']=prefs['theme']
-        st.query_params['group']=prefs['group']
-        if st.session_state.pop('_enable_storage_after_load',False):
-            st.session_state.persist_enabled=True
+            state[key]=value
+        query_params=state.get('query_params')
+        if query_params is None:
+            query_params=st.query_params
+        query_params['theme']=prefs.get('theme','Светлая')
+        query_params['group']=active if p['version']==2 else prefs['group']
+        if state.pop('_enable_storage_after_load',False):
+            state.persist_enabled=True
 
-def snapshot(theme,group):
-    from schedule import parse_csv,csv_export,COLUMNS
-    state=st.session_state
-    return dict(version=1,tasks=state.tasks,schedule=csv_export(parse_csv(state.schedule_raw)[COLUMNS]).decode('utf-8-sig'),source_name=state.source_name,is_demo=state.is_demo,preferences=dict(theme=theme,group=group,begin=state.get('plan_begin',9),end=state.get('plan_end',20),limit=state.get('plan_limit',120)))
+def snapshot(theme,group,state=None):
+    from schedule import parse_csv,csv_export
+    state=st.session_state if state is None else state
+    remember_active_profile(state)
+    profiles=state.get('group_profiles',{})
+    return dict(version=2,profiles=profiles,active_group=state.get('_active_group_key',group),
+                preferences=dict(theme=theme,begin=state.get('plan_begin',9),
+                                 end=state.get('plan_end',20),limit=state.get('plan_limit',120)))
+
+def profile_validation_error(payload):
+    try:
+        decode_profile(payload)
+    except ValueError as exc:
+        return str(exc) or 'Копия не прошла проверку.'
+    return ''
 
 def sync_browser(theme,group):
     component=st.components.v2.component('shoqan_profile_storage',html='<span role="status" aria-live="polite"></span>',js=(Path(__file__).parent/'storage.js').read_text(encoding='utf-8'))
     loaded=st.session_state.get('_storage_loaded',False)
     payload=json.dumps(snapshot(theme,group),ensure_ascii=False,sort_keys=True)
-    invalid=''
-    try:
-        decode_profile(payload)
-    except ValueError:
-        invalid='Исправьте часы подготовки: начало должно быть раньше конца. Сохранённая копия пока не изменяется.'
+    invalid=profile_validation_error(payload)
     revision=hashlib.sha256(payload.encode()).hexdigest()
     enabled=st.session_state.get('persist_enabled',False)
     error=st.session_state.get('_storage_error','') or invalid
@@ -74,7 +94,11 @@ def render_controls(theme,group):
     if uploaded:
         try:
             p=decode_profile(uploaded.getvalue().decode('utf-8-sig'))
-            st.caption(f"В копии {len(p['tasks'])} заданий. Источник: {p['source_name']}")
+            if p['version']==2:
+                task_count=sum(len(item['tasks']) for item in p['profiles'].values())
+                st.caption(f"В копии {len(p['profiles'])} групп и {task_count} заданий.")
+            else:
+                st.caption(f"В копии {len(p['tasks'])} заданий. Источник: {p['source_name']}")
             if st.button('Восстановить полную копию'):
                 st.session_state._profile_pending=p
                 st.rerun()

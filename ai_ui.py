@@ -6,6 +6,7 @@ import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
 from ai_service import AIError, Budget, DEFAULT_MODEL, FALLBACK_MODEL, extract
 from schedule import COLUMNS, csv_export, parse_csv, expand, conflicts
+from group_profiles import import_schedules_into_state
 
 @st.cache_resource
 def budget():
@@ -64,11 +65,14 @@ def render(group, today):
             st.download_button("Сохранить распознанный CSV",csv_export(validated[COLUMNS]),"recognized-schedule.csv","text/csv")
             confirmed=st.checkbox("Сверил таблицу с оригиналом; заменить текущее расписание",key="ai_confirm_"+hashlib.sha256(raw).hexdigest())
             if st.button("Применить проверенную таблицу",disabled=not confirmed):
-                st.session_state.schedule_raw=raw
-                st.session_state.source_name="ИИ-импорт: "+file.name
-                st.session_state.is_demo=False
-                st.session_state.pop("ai_draft",None)
-                st.rerun()
+                try:
+                    import_schedules_into_state(st.session_state,raw,"ИИ-импорт: "+file.name,preferred_group=group)
+                    st.session_state.pop("ai_draft",None)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success("Расписания добавлены по группам. Существующие планы сохранены; конфликты показываются отдельно.")
+                    st.rerun()
         except ValueError as exc:
             st.error(str(exc))
     st.caption("Не более 80 занятий за одно распознавание. Файлы и результаты хранятся только в текущей сессии приложения. Сохраните CSV перед закрытием.")

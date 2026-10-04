@@ -108,6 +108,10 @@ def _parse_csv(raw: bytes) -> pd.DataFrame:
         reasons = []
         if not r["group"] or not r["subject"]:
             reasons.append("заполните group и subject")
+        if len(r["group"]) > 200:
+            reasons.append("group: используйте не более 200 символов")
+        if r["group"].startswith(("=", "+", "-", "@", "\t", "\r")):
+            reasons.append("group: имя не должно начинаться с символа формулы Excel")
         if any(len(v) > 300 for v in r.values()):
             reasons.append("значение длиннее 300 символов")
         for field in ["start_time", "end_time"]:

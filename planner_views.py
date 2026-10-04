@@ -1,11 +1,11 @@
 """Views based exclusively on the current uploaded timetable."""
 import html
-from datetime import timedelta
+from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 from schedule import DAYS, expand, location, ics_export, date_is_covered
 
-def week_grid(rows, start):
+def week_grid(rows, start, covered_days=None):
     """Keep all lessons, including simultaneous and nonstandard intervals."""
     esc=lambda value: html.escape(str(value))
     intervals=sorted(set(zip(rows.start_time,rows.end_time)))
@@ -22,11 +22,54 @@ def week_grid(rows, start):
             if block.empty:
                 out.append('<span class="meta">—</span>')
             for r in block.to_dict('records'):
-                out.append(f'<div class="grid-lesson"><strong>{esc(r["subject"])}</strong><br>{esc(r["group"])} · {esc(r.get("lesson_type", ""))}<br>{esc(location(r))}<br><span class="meta">{esc(r["teacher"])}</span></div>')
+                study=bool(r.get('is_study',False))
+                done=bool(r.get('done',False))
+                kind='study-block' if study else 'class-block'
+                status=' · Выполнено' if study and done else ''
+                details='Блок подготовки' if study else f'{esc(r["group"])} · {esc(r.get("lesson_type", ""))}<br>{esc(location(r))}<br><span class="meta">{esc(r["teacher"])}</span>'
+                out.append(f'<div class="grid-lesson {kind}{" completed" if done else ""}"><strong>{esc(r["subject"])}</strong><br>{details}{status}</div>')
             out.append('</td>')
         out.append('</tr>')
     out.append('</tbody></table></div>')
+    out.append('<div class="week-mobile">')
+    for i in range(7):
+        day=start+timedelta(days=i)
+        block=rows[rows.lesson_date==day].sort_values(['start_time','end_time'])
+        out.append(f'<section class="mobile-day"><h4>{DAYS[i]} · {day:%d.%m}</h4>')
+        if block.empty:
+            note='Нет записей в загруженном источнике.' if covered_days is None or day in covered_days else 'Дата не покрыта источником расписания.'
+            out.append(f'<p class="meta">{note}</p>')
+        for r in block.to_dict('records'):
+            study=bool(r.get('is_study',False))
+            done=bool(r.get('done',False))
+            kind='study-block' if study else 'class-block'
+            detail='Подготовка к заданию' if study else f'{esc(r["group"])} · {esc(location(r))}'
+            status=' · Выполнено' if study and done else ''
+            out.append(f'<article class="mobile-event {kind}{" completed" if done else ""}"><time>{esc(r["start_time"])}–{esc(r["end_time"])}</time><div><strong>{esc(r["subject"])}</strong><span>{detail}{status}</span></div></article>')
+        out.append('</section>')
+    out.append('</div>')
     return ''.join(out)
+
+
+def study_rows(tasks, group, start, days=7):
+    """Build calendar events from the explicit saved preparation blocks."""
+    end=start+timedelta(days=days)
+    events=[]
+    for task in tasks:
+        for block in task.get('blocks',[]):
+            day=date.fromisoformat(block['date'])
+            if not start<=day<end:
+                continue
+            events.append({
+                'weekday':'','date':day,'group':group,
+                'start_time':block['start_time'],'end_time':block['end_time'],
+                'subject':'Подготовка: '+task['title'],'teacher':'','room':'','building':'',
+                'lesson_type':'Подготовка','lesson_date':day,'is_study':True,
+                'done':block['done'],'block_id':block['id'],'task_id':task['id'],
+            })
+    return pd.DataFrame(events,columns=['weekday','date','group','start_time','end_time','subject',
+                                        'teacher','room','building','lesson_type','lesson_date',
+                                        'is_study','done','block_id','task_id'])
 
 def room_snapshot(schedule, day, begin, end):
     rows=expand(schedule,day,1)
