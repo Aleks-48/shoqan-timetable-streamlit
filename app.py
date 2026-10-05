@@ -17,6 +17,7 @@ from group_profiles import (initialize_group_profiles, remember_active_profile, 
                             set_active_tasks, split_group_schedules,
                             import_schedules_into_state,
                             add_demo_schedule, MAX_IMPORTED_GROUPS)
+from schedule_proposal_ui import render_schedule_proposal
 
 ROOT = Path(__file__).parent
 st.set_page_config(page_title="Shoqan Day · Расписание", page_icon="📘", layout="wide")
@@ -210,7 +211,7 @@ if st.session_state.is_demo:
     st.info("Демо: занятия и преподаватели вымышлены. Это студенческий проект, не официальное расписание университета.",icon="ℹ️")
 else:
     st.caption("Личное расписание · сверьте изменения с официальным источником")
-calendar_tab,task_tab,settings_tab=st.tabs(["Календарь","Мой план","Настройки"])
+calendar_tab,task_tab,settings_tab,proposal_tab=st.tabs(["Календарь","Мой план","Настройки","Предложение расписания"])
 with calendar_tab:
     week_tab,day_tab=st.tabs(["Расписание недели","Учебный день"])
 with settings_tab:
@@ -659,4 +660,6 @@ with ai_tab:
     render_ai(group,today)
 with directory_tab:
     render_directory(schedule,start,today,lessons,now)
+with proposal_tab:
+    render_schedule_proposal()
 sync_browser(theme,group)
