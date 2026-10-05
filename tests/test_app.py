@@ -244,4 +244,39 @@ class AppTests(unittest.TestCase):
             self.assertTrue(any('YYYY-MM-DD' in e.value for e in a.error))
             self.assertFalse(a.exception)
 
+    def test_schedule_proposal_repeat_and_cancel_are_state_safe(self):
+        a=self.app()
+        next(b for b in a.button if b.key=='proposal_build').click().run()
+        first=a.session_state['_academic_proposal_draft']
+        self.assertEqual(first['proposal']['status'],'complete')
+        fingerprint=first['input_fingerprint']
+        meetings=first['proposal']['meetings']
+
+        next(b for b in a.button if b.key=='proposal_build').click().run()
+        repeated=a.session_state['_academic_proposal_draft']
+        self.assertEqual(repeated['input_fingerprint'],fingerprint)
+        self.assertEqual(repeated['proposal']['meetings'],meetings)
+
+        next(b for b in a.button if b.key=='proposal_cancel').click().run()
+        self.assertNotIn('_academic_proposal_draft',a.session_state)
+        self.assertFalse(a.exception)
+
+    def test_schedule_proposal_cancel_is_enabled_after_first_build(self):
+        a=self.app()
+        next(b for b in a.button if b.key=='proposal_build').click().run()
+        self.assertIn('_academic_proposal_draft',a.session_state)
+        cancel=next(b for b in a.button if b.key=='proposal_cancel')
+        self.assertFalse(cancel.disabled)
+        cancel.click().run()
+        self.assertNotIn('_academic_proposal_draft',a.session_state)
+        self.assertFalse(a.exception)
+
+    def test_interrupted_schedule_search_does_not_save_partial_state(self):
+        with patch('schedule_proposal_ui.generate_proposal',side_effect=TimeoutError):
+            a=self.app()
+            next(b for b in a.button if b.key=='proposal_build').click().run()
+            self.assertNotIn('_academic_proposal_draft',a.session_state)
+            self.assertTrue(any('прерван' in e.value for e in a.error))
+            self.assertFalse(a.exception)
+
 if __name__=='__main__':unittest.main()
